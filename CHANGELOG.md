@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.3 — 2026-04-04
+
+- Dashboard redesign: chip-as-card layout. Each card represents a silicon unit (CPU, GPU, Neural Engine, VideoToolbox) with its tasks inside. Eliminates redundant Apple Silicon section. Neural Engine card shows Face Detection and OCR with individual progress bars and counts.
+- Updated screenshot.
+
 ## 1.1.2 — 2026-04-04
 
 - Dashboard excludes hidden assets (Live Photo motion files) from progress counts — matches Immich's actual processing scope. Previously showed ~58% when actually 99.8% complete.
