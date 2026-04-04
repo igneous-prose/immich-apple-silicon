@@ -113,14 +113,15 @@ def get_status(config: dict) -> dict:
         pass
 
     # Processing counts
+    # Exclude hidden assets (Live Photo motion files) — Immich skips them too
     counts_raw = _query_db(
         "SELECT COUNT(*) FILTER (WHERE thumbhash IS NOT NULL), COUNT(*), "
         "(SELECT COUNT(*) FROM smart_search), "
         "(SELECT COUNT(*) FROM asset_job_status WHERE \"facesRecognizedAt\" IS NOT NULL), "
         "(SELECT COUNT(*) FROM asset_job_status WHERE \"ocrAt\" IS NOT NULL), "
-        "COUNT(*) FILTER (WHERE type = 'VIDEO'), "
-        "(SELECT COUNT(*) FROM asset_file WHERE type = 'encoded_video') "
-        "FROM asset", config)
+        "COUNT(*) FILTER (WHERE type = 'VIDEO' AND visibility != 'hidden'), "
+        "(SELECT COUNT(*) FROM asset_file af JOIN asset a ON a.id = af.\"assetId\" WHERE af.type = 'encoded_video' AND a.visibility != 'hidden') "
+        "FROM asset WHERE \"deletedAt\" IS NULL AND visibility != 'hidden'", config)
 
     thumbs, total, clip, faces, ocr, total_videos, encoded_videos = 0, 0, 0, 0, 0, 0, 0
     if counts_raw and "|" in counts_raw:

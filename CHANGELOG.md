@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.2 — 2026-04-04
+
+- Dashboard excludes hidden assets (Live Photo motion files) from progress counts — matches Immich's actual processing scope. Previously showed ~58% when actually 99.8% complete.
+- Video transcode count excludes hidden companion videos.
+
 ## 1.1.1 — 2026-04-04
 
 - Remove PLAN.md from repo (local planning doc, gitignored)
