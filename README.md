@@ -40,10 +40,13 @@ The microservices worker is extracted directly from your running Immich Docker i
 ## Requirements
 
 - macOS on Apple Silicon (M1/M2/M3/M4)
-- Docker with Immich already running ([OrbStack](https://orbstack.dev) recommended, Docker Desktop works too)
+- Immich already running in Docker (on this Mac or a remote host like a NAS)
 - Node.js (`brew install node`)
-- FFmpeg with VideoToolbox (`brew install ffmpeg`)
+- FFmpeg with VideoToolbox and libwebp (`brew install ffmpeg` — see note below)
+- libvips for image processing (`brew install vips`)
 - Python 3.11+ for the ML service
+
+> **FFmpeg note:** Homebrew's ffmpeg may not include the `libwebp` encoder, which is required for video thumbnails. Run `ffmpeg -encoders | grep libwebp` to check. If missing, you need to patch the formula — setup will detect this and print instructions.
 
 ## Quick start
 
@@ -59,12 +62,30 @@ pip install -r requirements.txt
 
 ### 2. Run setup
 
+**Same-machine (Docker + accelerator on one Mac):**
+
 ```bash
 cd ..
 python -m accelerator setup
 ```
 
-This detects your Immich instance, extracts the server from Docker, installs the native Sharp binary, and tells you exactly what to change in your `docker-compose.yml`.
+Auto-detects your Immich instance, extracts the server from Docker, installs the native Sharp binary, and tells you what to change in `docker-compose.yml`.
+
+**NAS + Mac (Docker on NAS, compute on Mac):**
+
+```bash
+python -m accelerator setup --url http://nas:2283 --api-key YOUR_KEY
+```
+
+Queries the Immich API for version info, prompts for DB/Redis connection details. Generate an API key in Immich (Administration > API Keys). Make sure Postgres and Redis ports are exposed on the NAS (not just localhost). If Docker is on the Mac it pulls the image automatically; if not, it guides you through extracting the server on your NAS.
+
+**Manual config (full control):**
+
+```bash
+python -m accelerator setup --manual
+```
+
+Creates a config template at `~/.immich-accelerator/config.json`. Edit the connection details, extract the server on your Docker host, and import with `setup --import-server ./server.tar.gz`.
 
 ### 3. Configure Docker
 
@@ -110,13 +131,28 @@ Starts the native microservices worker and ML service. Immich's web UI works as 
 
 | Command | What it does |
 |---------|-------------|
-| `python -m accelerator setup` | Detect Immich, extract server, configure |
+| `python -m accelerator setup` | Auto-detect local Docker, extract server, configure |
+| `python -m accelerator setup --url URL` | Setup from remote Immich instance |
+| `python -m accelerator setup --manual` | Create config template for manual editing |
 | `python -m accelerator start` | Start native worker + ML |
 | `python -m accelerator stop` | Stop native services |
 | `python -m accelerator status` | Show what's running |
 | `python -m accelerator logs [worker\|ml]` | Tail service logs |
 | `python -m accelerator update` | Update to match new Immich version |
 | `python -m accelerator watch` | Monitor + auto-restart on crash (for launchd) |
+| `python -m accelerator dashboard` | Web UI at http://localhost:8420 |
+
+## Dashboard
+
+Real-time monitoring at `http://your-mac:8420`:
+
+```bash
+python -m accelerator dashboard
+```
+
+Shows service health, processing progress with live rates and ETAs, Apple Silicon hardware utilization, and system metrics. Mobile-friendly — check from your phone.
+
+![Dashboard](docs/dashboard.png)
 
 ## Updates
 
@@ -145,16 +181,31 @@ Higher isn't always better — oversubscribing the CPU causes thrashing and actu
 
 For setups where Immich's Docker runs on a NAS and the Mac handles compute:
 
-- Docker runs on the NAS (API + Postgres + Redis)
-- Accelerator runs on the Mac (microservices + ML)
-- Expose Postgres and Redis ports in docker-compose (not just localhost)
-- Mount the NAS photo directory on the Mac via NFS or SMB
+1. **On the NAS**: Docker runs Immich server (API-only), Postgres, Redis. Expose Postgres and Redis ports (not just localhost).
+2. **On the Mac**: The accelerator runs the microservices worker and ML service natively.
 
-The tricky part is path consistency. The native worker on the Mac needs to see files at the same absolute paths that Docker on the NAS used. For uploads, `IMMICH_MEDIA_LOCATION` handles this. For external libraries, you may need to ensure the Mac's NFS/SMB mount path matches what Docker sees.
+```bash
+# Setup from the Mac, pointing at the NAS
+python -m accelerator setup --url http://nas:2283 --api-key YOUR_KEY
 
-For example, if Docker on the NAS mounts photos at `/mnt/photos`, the Mac needs an NFS mount at `/mnt/photos` too (or you migrate the DB paths to match your Mac's mount point — see [issue #2](https://github.com/epheterson/immich-apple-silicon/issues/2) for an example of this).
+# Or fully manual
+python -m accelerator setup --manual
+```
 
-This is an advanced setup. Start with same-machine (Docker + accelerator on the same Mac) first.
+Docker is **not required on the Mac**. If Docker isn't installed, setup will guide you through extracting the server on the NAS:
+
+```bash
+# Run on your NAS:
+docker cp immich_server:/usr/src/app/server - | gzip > immich-server.tar.gz
+docker cp immich_server:/build - | gzip > immich-build.tar.gz
+
+# Copy to Mac and import:
+python -m accelerator setup --import-server ./immich-server.tar.gz
+```
+
+**Path consistency**: The native worker on the Mac needs to see files at the same absolute paths that Docker on the NAS used. Mount the NAS photo directory on the Mac via NFS or SMB. For uploads, `IMMICH_MEDIA_LOCATION` handles this. For external libraries, ensure the Mac's mount path matches what Docker sees.
+
+For example, if Docker on the NAS mounts photos at `/mnt/photos`, the Mac needs an NFS mount at `/mnt/photos` too (or migrate the DB paths — see [issue #2](https://github.com/epheterson/immich-apple-silicon/issues/2)).
 
 ## ML service
 
@@ -188,11 +239,37 @@ The plist uses `watch` (not `start`) with `KeepAlive` so launchd restarts the mo
 - **UPSERT-safe database writes.** The native worker uses Immich's own job pipeline with the same UPSERT logic.
 - **Version-matched.** The extracted server always matches the Docker image version exactly.
 
+## Known differences from Docker
+
+The native worker runs Immich's unmodified code, but the surrounding toolchain differs. These differences are transparent to Immich — it sees the same results — but they affect how compute happens under the hood.
+
+| Area | Docker | Native (Accelerator) | Impact |
+|------|--------|---------------------|--------|
+| **ffmpeg** | Jellyfin-ffmpeg (custom build with `tonemapx` filter) | Homebrew ffmpeg 8.x with wrapper script | HDR→SDR tone mapping uses upstream `tonemap` filter instead of `tonemapx`. Color space params (primaries, transfer, matrix) from `tonemapx` are dropped — upstream `tonemap` handles the transfer internally. Visually close for thumbnails, but HDR content may show slight color differences. Not bit-identical. |
+| **ffmpeg encoders** | Software H.264/HEVC | VideoToolbox hardware H.264/HEVC via wrapper | Hardware-encoded output has slightly different bitstream characteristics. Immich doesn't notice — it just gets valid H.264/HEVC. |
+| **libwebp** | Built-in | Requires Homebrew formula patch (`--enable-libwebp`) | Video thumbnails are WebP; setup validates this encoder exists. |
+| **Sharp / libvips** | Prebuilt linux-arm64 Sharp | Rebuilt against Homebrew system libvips | Identical image output. System libvips handles corrupt HEIF files more gracefully (matches Docker's error handling). |
+| **ML: CLIP** | ONNX Runtime | MLX on Metal GPU | Same model, different runtime. Embeddings are numerically close but not identical (floating-point differences). Search results are equivalent. |
+| **ML: Face detection** | ONNX Runtime | Apple Vision framework (Neural Engine) | Different model entirely. Detection accuracy is comparable; bounding boxes may differ slightly. |
+| **ML: Face recognition** | ONNX Runtime | ONNX Runtime with CoreML | Same model, CoreML acceleration. Numerically close embeddings. |
+| **ML: OCR** | PaddleOCR via ONNX | Apple Vision framework (Neural Engine) | Different engine. Vision framework OCR is generally more accurate for Latin text, may differ for CJK. |
+| **Video thumbnails (HDR)** | `tonemapx` (all-in-one HDR→SDR) | `tonemap` + `format` (upstream equivalent) | Color rendition may differ slightly on HDR content. Non-HDR videos are identical. |
+| **`-preset` handling** | Software presets (ultrafast, medium, etc.) | Stripped for VideoToolbox (HW encoder ignores presets) | No quality impact — VideoToolbox uses its own quality control. |
+
+### What this means in practice
+
+- **Thumbnails and previews**: Visually identical for SDR content. HDR content uses a different tone mapping path (`tonemap` instead of `tonemapx`) — color rendition will differ, especially for wide-gamut content. Proper `tonemapx` support requires an upstream Immich change to fall back to standard filters.
+- **CLIP search**: Search results are equivalent but not identical. A search that returns 20 results in Docker will return ~18-20 of the same results natively, possibly in slightly different order.
+- **Face grouping**: Faces are detected and grouped correctly. The grouping boundaries may differ slightly (e.g., a borderline face might be grouped differently).
+- **OCR**: Text extraction is at least as good as Docker for English/Latin text.
+- **Video transcoding**: Hardware-accelerated via VideoToolbox. Quality is equivalent at the same bitrate; encoding is significantly faster.
+
 ## Security
 
 - Config file (`~/.immich-accelerator/config.json`) is chmod 600
 - Postgres exposed on `127.0.0.1:5432` (localhost only) by default
 - Redis exposed on `127.0.0.1:6379` (localhost only) by default
+- Dashboard binds on `0.0.0.0:8420` (LAN-accessible) — the Re-queue button triggers job processing via the Immich API. If you're on an untrusted network, don't run the dashboard or bind to localhost only
 
 ## Migrating from v0.x
 

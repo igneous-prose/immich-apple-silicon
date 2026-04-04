@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Immich Accelerator</title>
+<style>
+  :root {
+    --bg: #09090b;
+    --card: #18181b;
+    --card-border: #27272a;
+    --card-hover: #1f1f23;
+    --text: #fafafa;
+    --text-dim: #71717a;
+    --text-muted: #52525b;
+    --accent: #6366f1;
+    --green: #22c55e;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --purple: #a855f7;
+    --amber: #f59e0b;
+    --teal: #14b8a6;
+    --radius: 12px;
+    --radius-sm: 8px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container { max-width: 880px; margin: 0 auto; }
+
+  /* Header */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 28px;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .logo-icon {
+    width: 32px; height: 32px;
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+  }
+
+  header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 13px;
+  }
+
+  .header-right a {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 500;
+  }
+
+  .version-badge {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Services */
+  .services {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+
+  .service {
+    flex: 1;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: background 0.15s;
+  }
+
+  .service:hover { background: var(--card-hover); }
+
+  .dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .dot.on { background: var(--green); box-shadow: 0 0 6px rgba(34,197,94,0.5); }
+  .dot.off { background: var(--red); box-shadow: 0 0 6px rgba(239,68,68,0.4); }
+
+  .service-label { font-size: 13px; font-weight: 500; }
+
+  /* Section headers */
+  .section {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    font-weight: 600;
+    margin: 20px 0 10px;
+  }
+
+  /* Progress cards */
+  .progress-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .p-card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    padding: 16px;
+    transition: background 0.15s;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+
+  .p-card:hover { background: var(--card-hover); }
+
+  .p-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 10px;
+  }
+
+  .p-name { font-size: 13px; font-weight: 500; color: var(--text-dim); }
+  .p-pct {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.04em;
+    font-variant-numeric: tabular-nums;
+    background: linear-gradient(135deg, var(--text), var(--text-dim));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .bar-bg {
+    height: 4px;
+    background: var(--card-border);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 10px;
+  }
+
+  .bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 1s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .bar-fill.t1 { background: linear-gradient(90deg, var(--amber), #fcd34d); }   /* Thumbnails — CPU */
+  .bar-fill.t2 { background: linear-gradient(90deg, var(--purple), #c084fc); }  /* CLIP — Metal GPU */
+  .bar-fill.t3 { background: linear-gradient(90deg, var(--teal), #5eead4); }    /* Faces — Neural Engine */
+  .bar-fill.t4 { background: linear-gradient(90deg, var(--teal), #5eead4); }    /* OCR — Neural Engine */
+  .bar-fill.t5 { background: linear-gradient(90deg, var(--blue), #60a5fa); }    /* Video — VideoToolbox */
+
+  .p-stats {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .p-rate { color: var(--text-dim); font-weight: 500; }
+
+  /* Hardware */
+  .hw-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+
+  .hw {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    padding: 14px 10px;
+    text-align: center;
+  }
+
+  .hw-name {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+
+  .hw-name.gpu { color: var(--purple); }
+  .hw-name.ane { color: var(--teal); }
+  .hw-name.vtb { color: var(--blue); }
+  .hw-name.cpu { color: var(--amber); }
+
+  .hw-task { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
+
+  /* System bar */
+  .sys {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    padding: 10px 16px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 20px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .sys .v { color: var(--text-dim); font-weight: 500; }
+
+  /* Footer */
+  footer {
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 24px;
+  }
+
+  footer a { color: var(--text-muted); text-decoration: none; }
+  footer a:hover { color: var(--accent); }
+
+  /* Mobile */
+  @media (max-width: 640px) {
+    .progress-grid { grid-template-columns: 1fr; }
+    .services { flex-direction: column; }
+    .hw-grid { grid-template-columns: 1fr 1fr; }
+    .p-pct { font-size: 22px; }
+    body { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div class="logo">
+      <div class="logo-icon">⚡</div>
+      <h1>Immich Accelerator</h1>
+    </div>
+    <div class="header-right">
+      <span class="version-badge">Accelerator <span id="acc-ver">—</span></span>
+      <span class="version-badge">Immich <span id="ver">—</span></span>
+      <a id="immich-link" href="#" target="_blank">Open Immich →</a>
+    </div>
+  </header>
+
+  <div class="services" id="svc"></div>
+
+  <div class="section" style="display:flex; justify-content:space-between; align-items:center;">
+    <span>Processing</span>
+    <button id="requeue-btn" style="
+      background: var(--card); border: 1px solid var(--card-border);
+      color: var(--text-dim); font-size: 11px; padding: 4px 12px;
+      border-radius: 6px; cursor: pointer; font-weight: 500;
+      transition: all 0.15s;
+    " onmouseover="this.style.borderColor='var(--accent)'; this.style.color='var(--text)'"
+       onmouseout="this.style.borderColor='var(--card-border)'; this.style.color='var(--text-dim)'"
+    >Re-queue Missing ↻</button>
+  </div>
+  <div class="progress-grid" id="prog"></div>
+
+  <div class="section">Apple Silicon</div>
+  <div class="hw-grid">
+    <div class="hw"><div class="hw-name cpu">CPU (NEON)</div><div class="hw-task">Thumbnails<br>Sharp / libvips</div></div>
+    <div class="hw"><div class="hw-name gpu">Metal GPU</div><div class="hw-task">CLIP Embeddings<br>MLX</div></div>
+    <div class="hw"><div class="hw-name ane">Neural Engine</div><div class="hw-task">Faces + OCR<br>Apple Vision</div></div>
+    <div class="hw"><div class="hw-name vtb">VideoToolbox</div><div class="hw-task">Video Transcode<br>HW H.264/HEVC</div></div>
+  </div>
+
+  <div class="sys" id="sys"></div>
+
+  <footer>
+    <a href="https://github.com/epheterson/immich-apple-silicon">immich-accelerator</a> <span id="footer-ver">v1.0.0</span>
+    · Built with ❤️ by <a href="https://github.com/epheterson">@epheterson</a>
+  </footer>
+</div>
+
+<script>
+// Cards: each entry is a single task or a combined card with sub-tasks
+const CARDS = [
+  { key: 'thumbnails', rk: 'thumbs', label: 'Thumbnails',      cls: 't1' },
+  { key: 'clip',       rk: 'clip',   label: 'CLIP Embeddings', cls: 't2' },
+  { label: 'Neural Engine', combined: [
+    { key: 'faces', rk: 'faces', label: 'Faces', cls: 't3' },
+    { key: 'ocr',   rk: 'ocr',   label: 'OCR',   cls: 't4' },
+  ]},
+  { key: 'video',      rk: 'video',  label: 'Video Transcode', cls: 't5' },
+];
+
+// Client-side rate tracking (independent of server cache)
+let prevSnapshot = null;
+let prevTime = null;
+const rates = { thumbs: 0, clip: 0, faces: 0, ocr: 0, video: 0 };
+
+function calcRates(progress) {
+  const now = Date.now();
+  const snap = {
+    thumbs: progress.thumbnails.done,
+    clip: progress.clip.done,
+    faces: progress.faces.done,
+    ocr: progress.ocr.done,
+    video: progress.video.done,
+  };
+
+  if (prevSnapshot && prevTime) {
+    const dt = (now - prevTime) / 60000; // minutes
+    if (dt > 0.05) { // at least 3 seconds
+      for (const k of Object.keys(rates)) {
+        const delta = snap[k] - prevSnapshot[k];
+        // Smooth: blend 70% old + 30% new to avoid jumpy rates
+        const raw = delta / dt;
+        rates[k] = rates[k] ? Math.round(rates[k] * 0.7 + raw * 0.3) : Math.round(raw);
+      }
+    }
+  }
+
+  prevSnapshot = snap;
+  prevTime = now;
+}
+
+function n(v) { return v.toLocaleString(); }
+
+function etaStr(remaining, rate) {
+  if (!rate || rate <= 0) return '';
+  const m = remaining / rate;
+  if (m < 60) return Math.round(m) + 'm left';
+  const h = m / 60;
+  if (h < 24) return h.toFixed(1) + 'h left';
+  return (h / 24).toFixed(1) + 'd left';
+}
+
+function render(d) {
+  calcRates(d.progress);
+
+  // Versions
+  document.getElementById('ver').textContent = 'v' + d.version;
+  const accVer = 'v' + (d.accelerator_version || '?');
+  document.getElementById('acc-ver').textContent = accVer;
+  document.getElementById('footer-ver').textContent = accVer;
+
+  // Immich link — use the same host as the dashboard
+  const link = document.getElementById('immich-link');
+  link.href = window.location.protocol + '//' + window.location.hostname + ':2283';
+
+  // Services
+  const svcEl = document.getElementById('svc');
+  svcEl.textContent = '';
+  for (const [, svc] of Object.entries(d.services)) {
+    const div = document.createElement('div');
+    div.className = 'service';
+    const dot = document.createElement('div');
+    dot.className = 'dot ' + (svc.alive ? 'on' : 'off');
+    const lbl = document.createElement('div');
+    lbl.className = 'service-label';
+    lbl.textContent = svc.name;
+    div.appendChild(dot);
+    div.appendChild(lbl);
+    svcEl.appendChild(div);
+  }
+
+  // Progress — single-task cards and combined (dual-bar) Neural Engine card
+  const progEl = document.getElementById('prog');
+  progEl.textContent = '';
+
+  function taskInfo(t) {
+    const p = d.progress[t.key];
+    const rate = rates[t.rk] || 0;
+    const rem = p.total - p.done;
+    const eta = etaStr(rem, rate);
+    const qActive = d.queue_active && d.queue_active[t.key];
+    const rateText = rate > 0 ? (rate + '/min' + (eta ? ' · ' + eta : '')) : (p.pct >= 99.9 ? 'done' : (qActive ? 'processing' : 'idle'));
+    return { p, rateText };
+  }
+
+  for (const c of CARDS) {
+    const card = document.createElement('div');
+    card.className = 'p-card';
+
+    if (c.combined) {
+      // Combined card — same height as single cards. Shows min pct, stacked thin bars, compact stats.
+      const subs = c.combined.map(t => ({ t, ...taskInfo(t) }));
+      const minPct = Math.min(...subs.map(s => s.p.pct));
+
+      const top = document.createElement('div');
+      top.className = 'p-top';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'p-name';
+      nameEl.textContent = c.label;
+      const pctEl = document.createElement('div');
+      pctEl.className = 'p-pct';
+      pctEl.textContent = minPct + '%';
+      top.appendChild(nameEl);
+      top.appendChild(pctEl);
+      card.appendChild(top);
+
+      // Stacked thin bars (no extra labels — keeps height identical to single cards)
+      for (const s of subs) {
+        const barBg = document.createElement('div');
+        barBg.className = 'bar-bg';
+        barBg.style.marginBottom = '3px';
+        const barFill = document.createElement('div');
+        barFill.className = 'bar-fill ' + s.t.cls;
+        barFill.style.width = s.p.pct + '%';
+        barBg.appendChild(barFill);
+        card.appendChild(barBg);
+      }
+
+      // Compact stats line: "Faces 180k · OCR 180k    processing"
+      const stats = document.createElement('div');
+      stats.className = 'p-stats';
+      const countSpan = document.createElement('span');
+      countSpan.textContent = subs.map(s => s.t.label + ' ' + n(s.p.done)).join(' · ');
+      const anyActive = subs.some(s => s.rateText !== 'idle' && s.rateText !== 'done');
+      const rateSpan = document.createElement('span');
+      rateSpan.className = 'p-rate';
+      rateSpan.textContent = subs.map(s => s.rateText).find(r => r !== 'idle' && r !== 'done') || subs[0].rateText;
+      stats.appendChild(countSpan);
+      stats.appendChild(rateSpan);
+      card.appendChild(stats);
+    } else {
+      const { p, rateText } = taskInfo(c);
+      const top = document.createElement('div');
+      top.className = 'p-top';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'p-name';
+      nameEl.textContent = c.label;
+      const pctEl = document.createElement('div');
+      pctEl.className = 'p-pct';
+      pctEl.textContent = p.pct + '%';
+      top.appendChild(nameEl);
+      top.appendChild(pctEl);
+      const barBg = document.createElement('div');
+      barBg.className = 'bar-bg';
+      const barFill = document.createElement('div');
+      barFill.className = 'bar-fill ' + c.cls;
+      barFill.style.width = p.pct + '%';
+      barBg.appendChild(barFill);
+      const stats = document.createElement('div');
+      stats.className = 'p-stats';
+      const countSpan = document.createElement('span');
+      countSpan.textContent = n(p.done) + ' / ' + n(p.total);
+      const rateSpan = document.createElement('span');
+      rateSpan.className = 'p-rate';
+      rateSpan.textContent = rateText;
+      stats.appendChild(countSpan);
+      stats.appendChild(rateSpan);
+      card.appendChild(top);
+      card.appendChild(barBg);
+      card.appendChild(stats);
+    }
+
+    progEl.appendChild(card);
+  }
+
+  // System
+  const sysEl = document.getElementById('sys');
+  sysEl.textContent = '';
+  const items = [
+    ['Load', d.system.load_1m.toFixed(1)],
+    ['CPUs', String(d.system.cpus)],
+    ['Memory', d.system.mem_total_gb + ' GB'],
+    ['Updated', new Date().toLocaleTimeString()],
+  ];
+  for (const [label, val] of items) {
+    const span = document.createElement('span');
+    span.textContent = label + ' ';
+    const v = document.createElement('span');
+    v.className = 'v';
+    v.textContent = val;
+    span.appendChild(v);
+    sysEl.appendChild(span);
+  }
+}
+
+async function refresh() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    render(d);
+  } catch(e) {
+    console.error('Refresh:', e);
+  }
+}
+
+// Re-queue button
+document.getElementById('requeue-btn').addEventListener('click', async function() {
+  const btn = this;
+  btn.textContent = 'Queuing...';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/requeue', { method: 'POST' });
+    const d = await r.json();
+    btn.textContent = 'Queued ✓';
+    setTimeout(() => { btn.textContent = 'Re-queue Missing ↻'; btn.disabled = false; }, 3000);
+  } catch(e) {
+    btn.textContent = 'Failed';
+    setTimeout(() => { btn.textContent = 'Re-queue Missing ↻'; btn.disabled = false; }, 3000);
+  }
+});
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
