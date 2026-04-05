@@ -6,6 +6,7 @@
 - Squash merge to main. One clean commit per release.
 - Version bump + CHANGELOG entry required for every push to main.
 - Tag releases as `vX.Y.Z` matching the VERSION file.
+- **After every tag push**: update the Homebrew tap (epheterson/homebrew-immich-accelerator) via `gh api` — new version, tarball URL, sha256. Verify on Mac Mini. Never skip this.
 
 ## Code style
 

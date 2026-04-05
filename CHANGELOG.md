@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.1 — 2026-04-05
+
+- **Homebrew install**: `brew tap epheterson/immich-accelerator && brew install immich-accelerator`. Installs deps, creates `immich-accelerator` command in PATH, supports `brew services start` for auto-launch.
+- Formula at [epheterson/homebrew-immich-accelerator](https://github.com/epheterson/homebrew-immich-accelerator).
+
 ## 1.3.0 — 2026-04-04
 
 ### Module renamed
