@@ -113,14 +113,15 @@ def get_status(config: dict) -> dict:
         pass
 
     # Processing counts
+    # Exclude hidden assets (Live Photo motion files) — Immich skips them too
     counts_raw = _query_db(
         "SELECT COUNT(*) FILTER (WHERE thumbhash IS NOT NULL), COUNT(*), "
         "(SELECT COUNT(*) FROM smart_search), "
         "(SELECT COUNT(*) FROM asset_job_status WHERE \"facesRecognizedAt\" IS NOT NULL), "
         "(SELECT COUNT(*) FROM asset_job_status WHERE \"ocrAt\" IS NOT NULL), "
-        "COUNT(*) FILTER (WHERE type = 'VIDEO'), "
-        "(SELECT COUNT(*) FROM asset_file WHERE type = 'encoded_video') "
-        "FROM asset", config)
+        "COUNT(*) FILTER (WHERE type = 'VIDEO' AND visibility != 'hidden'), "
+        "(SELECT COUNT(*) FROM asset_file af JOIN asset a ON a.id = af.\"assetId\" WHERE af.type = 'encoded_video' AND a.visibility != 'hidden') "
+        "FROM asset WHERE \"deletedAt\" IS NULL AND visibility != 'hidden'", config)
 
     thumbs, total, clip, faces, ocr, total_videos, encoded_videos = 0, 0, 0, 0, 0, 0, 0
     if counts_raw and "|" in counts_raw:
@@ -177,6 +178,25 @@ def get_status(config: dict) -> dict:
     # Versions
     version = config.get("version", "?")
 
+    # When all queues are confirmed idle (API responded, nothing active),
+    # unprocessable assets are "skipped." Only apply when we actually got
+    # queue data — empty queue_status means API unreachable, not "idle."
+    queues_known = bool(queue_status)
+    any_active = queues_known and any(queue_status.values())
+    def prog(done, tot):
+        if queues_known and not any_active and done < tot:
+            return {"done": done, "total": tot, "pct": 100.0, "skipped": tot - done}
+        return {"done": done, "total": tot, "pct": round(done / max(tot, 1) * 100, 1), "skipped": 0}
+
+    # Video transcode: use queue state for pct when active, 100% when idle + transcoded
+    vid_active = queue_status.get("video", False)
+    if vid_active and total_videos > 0:
+        vid_pct = round(encoded_videos / total_videos * 100, 1)
+    elif encoded_videos > 0:
+        vid_pct = 100.0
+    else:
+        vid_pct = 0
+
     status = {
         "services": {
             "worker": {"alive": worker_alive, "name": "Microservices Worker"},
@@ -184,11 +204,11 @@ def get_status(config: dict) -> dict:
             "docker": {"alive": total > 0, "name": "Docker (API)"},
         },
         "progress": {
-            "thumbnails": {"done": thumbs, "total": total, "pct": round(thumbs / max(total, 1) * 100, 1)},
-            "clip": {"done": clip, "total": total, "pct": round(clip / max(total, 1) * 100, 1)},
-            "faces": {"done": faces, "total": total, "pct": round(faces / max(total, 1) * 100, 1)},
-            "ocr": {"done": ocr, "total": total, "pct": round(ocr / max(total, 1) * 100, 1)},
-            "video": {"done": encoded_videos, "total": total_videos, "pct": round(encoded_videos / max(total_videos, 1) * 100, 1)},
+            "thumbnails": prog(thumbs, total),
+            "clip": prog(clip, total),
+            "faces": prog(faces, total),
+            "ocr": prog(ocr, total),
+            "video": {"done": encoded_videos, "total": total_videos, "pct": vid_pct, "skipped": 0},
         },
         "system": {
             "load_1m": load_1m,

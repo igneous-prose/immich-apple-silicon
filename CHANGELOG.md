@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.0 — 2026-04-04
+
+### Dashboard
+- Chip-as-card layout: each card represents a silicon unit (CPU, GPU, Neural Engine, VideoToolbox) with its tasks inside. Neural Engine shows Face Detection and OCR with individual progress bars and counts.
+- Excludes hidden assets (Live Photo motion files) from progress — matches Immich's actual processing scope.
+- Shows 100% when all processable assets are complete. Unprocessable files (corrupt, stubs) tracked as "skipped" instead of dragging percentage below 100%.
+- Video Transcode shows "N transcoded" instead of misleading ratio against total videos.
+
+### Housekeeping
+- PLAN.md removed from repo (local planning doc, gitignored)
+- Pre-push hook enforces VERSION > remote + CHANGELOG entry
+
 ## 1.1.0 — 2026-04-03
 
 ### Setup: remote and manual modes

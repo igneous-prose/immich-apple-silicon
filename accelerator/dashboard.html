@@ -37,7 +37,6 @@
 
   .container { max-width: 880px; margin: 0 auto; }
 
-  /* Header */
   header {
     display: flex;
     align-items: center;
@@ -130,35 +129,52 @@
     margin: 20px 0 10px;
   }
 
-  /* Progress cards */
-  .progress-grid {
+  /* Chip cards — 2x2 grid, each card represents a silicon unit */
+  .chip-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
   }
 
-  .p-card {
+  .chip-card {
     background: var(--card);
     border: 1px solid var(--card-border);
     border-radius: var(--radius);
     padding: 16px;
     transition: background 0.15s;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
   }
 
-  .p-card:hover { background: var(--card-hover); }
+  .chip-card:hover { background: var(--card-hover); }
 
-  .p-top {
+  .chip-header {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 700;
+    margin-bottom: 12px;
+  }
+
+  .chip-header.cpu { color: var(--amber); }
+  .chip-header.gpu { color: var(--purple); }
+  .chip-header.ane { color: var(--teal); }
+  .chip-header.vtb { color: var(--blue); }
+
+  .task-row {
+    margin-bottom: 8px;
+  }
+
+  .task-row:last-child { margin-bottom: 0; }
+
+  .task-top {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    margin-bottom: 10px;
+    margin-bottom: 4px;
   }
 
-  .p-name { font-size: 13px; font-weight: 500; color: var(--text-dim); }
-  .p-pct {
+  .task-label { font-size: 13px; font-weight: 500; color: var(--text-dim); }
+
+  .task-pct {
     font-size: 28px;
     font-weight: 700;
     letter-spacing: -0.04em;
@@ -168,12 +184,17 @@
     -webkit-text-fill-color: transparent;
   }
 
+  /* Smaller pct for multi-task cards so they don't dominate */
+  .task-pct.sub {
+    font-size: 20px;
+  }
+
   .bar-bg {
     height: 4px;
     background: var(--card-border);
     border-radius: 2px;
     overflow: hidden;
-    margin-bottom: 10px;
+    margin-bottom: 6px;
   }
 
   .bar-fill {
@@ -182,13 +203,12 @@
     transition: width 1s cubic-bezier(0.4, 0, 0.2, 1);
   }
 
-  .bar-fill.t1 { background: linear-gradient(90deg, var(--amber), #fcd34d); }   /* Thumbnails — CPU */
-  .bar-fill.t2 { background: linear-gradient(90deg, var(--purple), #c084fc); }  /* CLIP — Metal GPU */
-  .bar-fill.t3 { background: linear-gradient(90deg, var(--teal), #5eead4); }    /* Faces — Neural Engine */
-  .bar-fill.t4 { background: linear-gradient(90deg, var(--teal), #5eead4); }    /* OCR — Neural Engine */
-  .bar-fill.t5 { background: linear-gradient(90deg, var(--blue), #60a5fa); }    /* Video — VideoToolbox */
+  .bar-fill.cpu { background: linear-gradient(90deg, var(--amber), #fcd34d); }
+  .bar-fill.gpu { background: linear-gradient(90deg, var(--purple), #c084fc); }
+  .bar-fill.ane { background: linear-gradient(90deg, var(--teal), #5eead4); }
+  .bar-fill.vtb { background: linear-gradient(90deg, var(--blue), #60a5fa); }
 
-  .p-stats {
+  .task-stats {
     display: flex;
     justify-content: space-between;
     font-size: 12px;
@@ -196,37 +216,14 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .p-rate { color: var(--text-dim); font-weight: 500; }
+  .task-rate { color: var(--text-dim); font-weight: 500; }
 
-  /* Hardware */
-  .hw-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 10px;
+  /* Divider between tasks in multi-task cards */
+  .task-divider {
+    border: none;
+    border-top: 1px solid var(--card-border);
+    margin: 10px 0;
   }
-
-  .hw {
-    background: var(--card);
-    border: 1px solid var(--card-border);
-    border-radius: var(--radius-sm);
-    padding: 14px 10px;
-    text-align: center;
-  }
-
-  .hw-name {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-weight: 700;
-    margin-bottom: 4px;
-  }
-
-  .hw-name.gpu { color: var(--purple); }
-  .hw-name.ane { color: var(--teal); }
-  .hw-name.vtb { color: var(--blue); }
-  .hw-name.cpu { color: var(--amber); }
-
-  .hw-task { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
 
   /* System bar */
   .sys {
@@ -244,7 +241,6 @@
 
   .sys .v { color: var(--text-dim); font-weight: 500; }
 
-  /* Footer */
   footer {
     text-align: center;
     font-size: 11px;
@@ -255,12 +251,11 @@
   footer a { color: var(--text-muted); text-decoration: none; }
   footer a:hover { color: var(--accent); }
 
-  /* Mobile */
   @media (max-width: 640px) {
-    .progress-grid { grid-template-columns: 1fr; }
+    .chip-grid { grid-template-columns: 1fr; }
     .services { flex-direction: column; }
-    .hw-grid { grid-template-columns: 1fr 1fr; }
-    .p-pct { font-size: 22px; }
+    .task-pct { font-size: 22px; }
+    .task-pct.sub { font-size: 18px; }
     body { padding: 16px; }
   }
 </style>
@@ -282,7 +277,7 @@
   <div class="services" id="svc"></div>
 
   <div class="section" style="display:flex; justify-content:space-between; align-items:center;">
-    <span>Processing</span>
+    <span>Apple Silicon</span>
     <button id="requeue-btn" style="
       background: var(--card); border: 1px solid var(--card-border);
       color: var(--text-dim); font-size: 11px; padding: 4px 12px;
@@ -292,15 +287,7 @@
        onmouseout="this.style.borderColor='var(--card-border)'; this.style.color='var(--text-dim)'"
     >Re-queue Missing ↻</button>
   </div>
-  <div class="progress-grid" id="prog"></div>
-
-  <div class="section">Apple Silicon</div>
-  <div class="hw-grid">
-    <div class="hw"><div class="hw-name cpu">CPU (NEON)</div><div class="hw-task">Thumbnails<br>Sharp / libvips</div></div>
-    <div class="hw"><div class="hw-name gpu">Metal GPU</div><div class="hw-task">CLIP Embeddings<br>MLX</div></div>
-    <div class="hw"><div class="hw-name ane">Neural Engine</div><div class="hw-task">Faces + OCR<br>Apple Vision</div></div>
-    <div class="hw"><div class="hw-name vtb">VideoToolbox</div><div class="hw-task">Video Transcode<br>HW H.264/HEVC</div></div>
-  </div>
+  <div class="chip-grid" id="chips"></div>
 
   <div class="sys" id="sys"></div>
 
@@ -311,18 +298,23 @@
 </div>
 
 <script>
-// Cards: each entry is a single task or a combined card with sub-tasks
-const CARDS = [
-  { key: 'thumbnails', rk: 'thumbs', label: 'Thumbnails',      cls: 't1' },
-  { key: 'clip',       rk: 'clip',   label: 'CLIP Embeddings', cls: 't2' },
-  { label: 'Neural Engine', combined: [
-    { key: 'faces', rk: 'faces', label: 'Faces', cls: 't3' },
-    { key: 'ocr',   rk: 'ocr',   label: 'OCR',   cls: 't4' },
+// Chip cards — each chip has one or more tasks
+const CHIPS = [
+  { chip: 'cpu', chipLabel: 'CPU (NEON)', tasks: [
+    { key: 'thumbnails', rk: 'thumbs', label: 'Thumbnails' },
   ]},
-  { key: 'video',      rk: 'video',  label: 'Video Transcode', cls: 't5' },
+  { chip: 'gpu', chipLabel: 'Metal GPU', tasks: [
+    { key: 'clip', rk: 'clip', label: 'CLIP Embeddings' },
+  ]},
+  { chip: 'ane', chipLabel: 'Neural Engine', tasks: [
+    { key: 'faces', rk: 'faces', label: 'Face Detection' },
+    { key: 'ocr', rk: 'ocr', label: 'OCR' },
+  ]},
+  { chip: 'vtb', chipLabel: 'VideoToolbox', tasks: [
+    { key: 'video', rk: 'video', label: 'Video Transcode' },
+  ]},
 ];
 
-// Client-side rate tracking (independent of server cache)
 let prevSnapshot = null;
 let prevTime = null;
 const rates = { thumbs: 0, clip: 0, faces: 0, ocr: 0, video: 0 };
@@ -338,11 +330,10 @@ function calcRates(progress) {
   };
 
   if (prevSnapshot && prevTime) {
-    const dt = (now - prevTime) / 60000; // minutes
-    if (dt > 0.05) { // at least 3 seconds
+    const dt = (now - prevTime) / 60000;
+    if (dt > 0.05) {
       for (const k of Object.keys(rates)) {
         const delta = snap[k] - prevSnapshot[k];
-        // Smooth: blend 70% old + 30% new to avoid jumpy rates
         const raw = delta / dt;
         rates[k] = rates[k] ? Math.round(rates[k] * 0.7 + raw * 0.3) : Math.round(raw);
       }
@@ -373,7 +364,7 @@ function render(d) {
   document.getElementById('acc-ver').textContent = accVer;
   document.getElementById('footer-ver').textContent = accVer;
 
-  // Immich link — use the same host as the dashboard
+  // Immich link
   const link = document.getElementById('immich-link');
   link.href = window.location.protocol + '//' + window.location.hostname + ':2283';
 
@@ -393,98 +384,84 @@ function render(d) {
     svcEl.appendChild(div);
   }
 
-  // Progress — single-task cards and combined (dual-bar) Neural Engine card
-  const progEl = document.getElementById('prog');
-  progEl.textContent = '';
+  // Chip cards
+  const chipsEl = document.getElementById('chips');
+  chipsEl.textContent = '';
 
-  function taskInfo(t) {
-    const p = d.progress[t.key];
-    const rate = rates[t.rk] || 0;
-    const rem = p.total - p.done;
-    const eta = etaStr(rem, rate);
-    const qActive = d.queue_active && d.queue_active[t.key];
-    const rateText = rate > 0 ? (rate + '/min' + (eta ? ' · ' + eta : '')) : (p.pct >= 99.9 ? 'done' : (qActive ? 'processing' : 'idle'));
-    return { p, rateText };
-  }
-
-  for (const c of CARDS) {
+  for (const chip of CHIPS) {
     const card = document.createElement('div');
-    card.className = 'p-card';
+    card.className = 'chip-card';
 
-    if (c.combined) {
-      // Combined card — same height as single cards. Shows min pct, stacked thin bars, compact stats.
-      const subs = c.combined.map(t => ({ t, ...taskInfo(t) }));
-      const minPct = Math.min(...subs.map(s => s.p.pct));
+    // Chip header
+    const header = document.createElement('div');
+    header.className = 'chip-header ' + chip.chip;
+    header.textContent = chip.chipLabel;
+    card.appendChild(header);
 
-      const top = document.createElement('div');
-      top.className = 'p-top';
-      const nameEl = document.createElement('div');
-      nameEl.className = 'p-name';
-      nameEl.textContent = c.label;
-      const pctEl = document.createElement('div');
-      pctEl.className = 'p-pct';
-      pctEl.textContent = minPct + '%';
-      top.appendChild(nameEl);
-      top.appendChild(pctEl);
-      card.appendChild(top);
+    const isMulti = chip.tasks.length > 1;
 
-      // Stacked thin bars (no extra labels — keeps height identical to single cards)
-      for (const s of subs) {
-        const barBg = document.createElement('div');
-        barBg.className = 'bar-bg';
-        barBg.style.marginBottom = '3px';
-        const barFill = document.createElement('div');
-        barFill.className = 'bar-fill ' + s.t.cls;
-        barFill.style.width = s.p.pct + '%';
-        barBg.appendChild(barFill);
-        card.appendChild(barBg);
+    chip.tasks.forEach((t, idx) => {
+      const p = d.progress[t.key];
+      const rate = rates[t.rk] || 0;
+      const rem = p.total - p.done;
+      const eta = etaStr(rem, rate);
+      const qActive = d.queue_active && d.queue_active[t.key];
+      const rateText = rate > 0 ? (rate + '/min' + (eta ? ' · ' + eta : '')) : (p.pct >= 99.9 ? 'done' : (qActive ? 'processing' : 'idle'));
+
+      // Divider between tasks
+      if (idx > 0) {
+        const hr = document.createElement('hr');
+        hr.className = 'task-divider';
+        card.appendChild(hr);
       }
 
-      // Compact stats line: "Faces 180k · OCR 180k    processing"
-      const stats = document.createElement('div');
-      stats.className = 'p-stats';
-      const countSpan = document.createElement('span');
-      countSpan.textContent = subs.map(s => s.t.label + ' ' + n(s.p.done)).join(' · ');
-      const anyActive = subs.some(s => s.rateText !== 'idle' && s.rateText !== 'done');
-      const rateSpan = document.createElement('span');
-      rateSpan.className = 'p-rate';
-      rateSpan.textContent = subs.map(s => s.rateText).find(r => r !== 'idle' && r !== 'done') || subs[0].rateText;
-      stats.appendChild(countSpan);
-      stats.appendChild(rateSpan);
-      card.appendChild(stats);
-    } else {
-      const { p, rateText } = taskInfo(c);
+      const row = document.createElement('div');
+      row.className = 'task-row';
+
+      // Top: label + pct
       const top = document.createElement('div');
-      top.className = 'p-top';
-      const nameEl = document.createElement('div');
-      nameEl.className = 'p-name';
-      nameEl.textContent = c.label;
-      const pctEl = document.createElement('div');
-      pctEl.className = 'p-pct';
-      pctEl.textContent = p.pct + '%';
-      top.appendChild(nameEl);
-      top.appendChild(pctEl);
+      top.className = 'task-top';
+      const label = document.createElement('div');
+      label.className = 'task-label';
+      label.textContent = t.label;
+      const pct = document.createElement('div');
+      pct.className = 'task-pct' + (isMulti ? ' sub' : '');
+      pct.textContent = p.pct + '%';
+      top.appendChild(label);
+      top.appendChild(pct);
+      row.appendChild(top);
+
+      // Bar
       const barBg = document.createElement('div');
       barBg.className = 'bar-bg';
       const barFill = document.createElement('div');
-      barFill.className = 'bar-fill ' + c.cls;
+      barFill.className = 'bar-fill ' + chip.chip;
       barFill.style.width = p.pct + '%';
       barBg.appendChild(barFill);
+      row.appendChild(barBg);
+
+      // Stats
       const stats = document.createElement('div');
-      stats.className = 'p-stats';
+      stats.className = 'task-stats';
       const countSpan = document.createElement('span');
-      countSpan.textContent = n(p.done) + ' / ' + n(p.total);
+      if (t.key === 'video') {
+        countSpan.textContent = n(p.done) + ' transcoded';
+      } else if (p.skipped > 0) {
+        countSpan.textContent = n(p.done) + ' / ' + n(p.total) + ' · ' + n(p.skipped) + ' skipped';
+      } else {
+        countSpan.textContent = n(p.done) + ' / ' + n(p.total);
+      }
       const rateSpan = document.createElement('span');
-      rateSpan.className = 'p-rate';
+      rateSpan.className = 'task-rate';
       rateSpan.textContent = rateText;
       stats.appendChild(countSpan);
       stats.appendChild(rateSpan);
-      card.appendChild(top);
-      card.appendChild(barBg);
-      card.appendChild(stats);
-    }
+      row.appendChild(stats);
 
-    progEl.appendChild(card);
+      card.appendChild(row);
+    });
+
+    chipsEl.appendChild(card);
   }
 
   // System
