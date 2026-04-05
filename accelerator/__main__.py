@@ -47,14 +47,66 @@ def find_binary(name: str, paths: list[str], install_hint: str) -> str:
     raise RuntimeError(f"{name} not found. {install_hint}")
 
 
+def _ensure_homebrew() -> str | None:
+    """Find Homebrew, or offer to install it. Returns brew path or None."""
+    for p in ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]:
+        if os.path.isfile(p):
+            return p
+    try:
+        answer = input("  Homebrew not found. Install it? [Y/n] ").strip().lower()
+    except EOFError:
+        return None
+    if answer and answer != "y":
+        return None
+    log.info("  Installing Homebrew...")
+    result = subprocess.run(
+        ["/bin/bash", "-c",
+         'curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh | /bin/bash'],
+        capture_output=False, timeout=600,
+    )
+    if result.returncode == 0:
+        for p in ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]:
+            if os.path.isfile(p):
+                return p
+    log.warning("  Homebrew installation failed. Install manually: https://brew.sh")
+    return None
+
+
+def _brew_install(package: str) -> bool:
+    """Prompt to install a Homebrew package. Returns True if installed."""
+    brew = _ensure_homebrew()
+    if not brew:
+        return False
+
+    try:
+        answer = input(f"  {package} not found. Install with Homebrew? [Y/n] ").strip().lower()
+    except EOFError:
+        return False
+    if answer and answer != "y":
+        return False
+
+    log.info("  Installing %s...", package)
+    result = subprocess.run([brew, "install", package],
+                           capture_output=False, timeout=300)
+    return result.returncode == 0
+
+
 def find_docker() -> str:
-    return find_binary("Docker", ["/usr/local/bin/docker", "/opt/homebrew/bin/docker"],
+    return find_binary("Docker", ["/usr/local/bin/docker", "/opt/homebrew/bin/docker",
+                                   "/Applications/OrbStack.app/Contents/MacOS/xbin/docker"],
                        "Install Docker Desktop or OrbStack.")
 
 
 def find_node() -> str:
-    return find_binary("Node.js", ["/opt/homebrew/bin/node", "/usr/local/bin/node"],
-                       "Install with: brew install node")
+    paths = ["/opt/homebrew/bin/node", "/usr/local/bin/node"]
+    for p in paths:
+        if os.path.isfile(p):
+            return p
+    if _brew_install("node"):
+        for p in paths:
+            if os.path.isfile(p):
+                return p
+    raise RuntimeError("Node.js not found. Install with: brew install node")
 
 
 def find_npm() -> str:
@@ -455,11 +507,27 @@ def _ensure_jellyfin_ffmpeg() -> str:
     return str(jf_ffmpeg)
 
 
+def _ensure_vips() -> None:
+    """Check for libvips (needed for Sharp). Offer to install if missing."""
+    vips_paths = ["/opt/homebrew/lib/libvips.dylib", "/usr/local/lib/libvips.dylib"]
+    for p in vips_paths:
+        if os.path.isfile(p):
+            return
+    # Also check via pkg-config
+    r = subprocess.run(["pkg-config", "--exists", "vips"], capture_output=True, timeout=5)
+    if r.returncode == 0:
+        return
+    if not _brew_install("vips"):
+        log.warning("libvips not found. Sharp rebuild may fail. Install: brew install vips")
+
+
 def _check_local_tools() -> tuple[str, str | None, Path | None]:
-    """Check for Node.js, ffmpeg, and ML service. Returns (node, ffmpeg_path, ml_dir)."""
+    """Check for Node.js, ffmpeg, libvips, and ML service. Returns (node, ffmpeg_path, ml_dir)."""
     node = find_node()
     log.info("Node.js: %s",
              subprocess.run([node, "--version"], capture_output=True, text=True).stdout.strip())
+
+    _ensure_vips()
 
     # Use jellyfin-ffmpeg (same as Immich's Docker image) — has tonemapx, VideoToolbox, libwebp
     try:
