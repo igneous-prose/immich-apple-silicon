@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Syntax check
+        run: python -m py_compile immich_accelerator/__init__.py
+      - name: Run pytest (if tests exist)
+        run: |
+          pip install pytest
+          if find . -name "test_*.py" -o -name "*_test.py" | grep -q .; then
+            pytest -v
+          else
+            echo "No test files found - skipping"
+          fi
