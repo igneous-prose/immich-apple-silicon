@@ -73,28 +73,39 @@ def _ensure_build_link():
         # Migrate legacy synthetic.conf entry to synthetic.d if needed
         if not SYNTHETIC_CONF.exists():
             legacy = Path("/etc/synthetic.conf")
-            if legacy.exists() and "build\t" in legacy.read_text():
+            try:
+                content = legacy.read_text() if legacy.exists() else ""
+            except OSError:
+                content = ""
+            has_legacy = any(
+                line.startswith("build\t") for line in content.splitlines()
+            )
+            if has_legacy:
                 relative_target = str(build_data).lstrip("/")
                 entry = f"build\t{relative_target}\n"
                 try:
-                    subprocess.run(
+                    # Write new synthetic.d file first — only remove legacy if this succeeds
+                    r1 = subprocess.run(
                         ["sudo", "mkdir", "-p", "/etc/synthetic.d"],
                         capture_output=True,
                         timeout=30,
                     )
-                    subprocess.run(
+                    if r1.returncode != 0:
+                        raise OSError("mkdir failed")
+                    r2 = subprocess.run(
                         ["sudo", "tee", str(SYNTHETIC_CONF)],
                         input=entry,
                         capture_output=True,
                         text=True,
                         timeout=30,
                     )
-                    # Remove from legacy conf
-                    content = legacy.read_text()
+                    if r2.returncode != 0:
+                        raise OSError("tee failed")
+                    # New file written — now safe to clean legacy
                     lines = [
-                        l
-                        for l in content.splitlines(keepends=True)
-                        if not l.startswith("build\t")
+                        line
+                        for line in content.splitlines(keepends=True)
+                        if not line.startswith("build\t")
                     ]
                     new_content = "".join(lines)
                     if new_content.strip():
@@ -105,9 +116,15 @@ def _ensure_build_link():
                             text=True,
                             timeout=30,
                         )
+                    else:
+                        subprocess.run(
+                            ["sudo", "rm", str(legacy)],
+                            capture_output=True,
+                            timeout=10,
+                        )
                     log.info("Migrated /build link to /etc/synthetic.d/")
                 except (OSError, subprocess.SubprocessError):
-                    pass  # Non-fatal, link still works
+                    pass  # Non-fatal, link still works from legacy location
         return True
 
     if Path("/build").exists():
@@ -203,11 +220,14 @@ def _remove_build_link():
     if legacy_conf.exists():
         try:
             content = legacy_conf.read_text()
-            if "build\t" in content:
+            has_legacy = any(
+                line.startswith("build\t") for line in content.splitlines()
+            )
+            if has_legacy:
                 lines = [
-                    l
-                    for l in content.splitlines(keepends=True)
-                    if not l.startswith("build\t")
+                    line
+                    for line in content.splitlines(keepends=True)
+                    if not line.startswith("build\t")
                 ]
                 new_content = "".join(lines)
                 if not removed:
