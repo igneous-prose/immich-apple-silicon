@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.5 — 2026-04-08
+
+### Bug fixes
+- **jellyfin-ffmpeg auto-detect**: No longer hardcodes a specific version URL that 404s when upstream updates. Now parses the repo directory listing for the latest build.
+- **Homebrew formula**: Move ML venv pip install to `post_install` phase to avoid Homebrew's dylib fixup errors on Rust-compiled Python extensions.
+- **Cleanup**: Remove stale local formula copy (real formula lives in tap repo, auto-updated by CI).
+
 ## 1.3.4 — 2026-04-08
 
 ### Bug fixes
