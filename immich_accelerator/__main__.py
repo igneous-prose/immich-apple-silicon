@@ -1701,9 +1701,24 @@ def cmd_start(args):
         worker_env["IMMICH_MEDIA_LOCATION"] = config["upload_mount"]
 
     # /build link points to our build-data dir (set up during setup).
-    # If link isn't active or points elsewhere, fall back to IMMICH_BUILD_DATA.
+    # Required for Immich 2.7+ plugin WASM paths stored in the shared DB.
     build_data = DATA_DIR / "build-data"
-    if not _build_link_ok():
+    has_plugins = (build_data / "corePlugin" / "manifest.json").exists()
+
+    if _build_link_ok():
+        pass  # /build resolves correctly, both Docker and native see the same paths
+    elif has_plugins:
+        # Plugins exist but /build isn't set up — worker WILL fail on plugin load.
+        # Try to set it up now (handles 2.6→2.7 upgrade case).
+        if sys.stdin.isatty():
+            _ensure_build_link()
+        if not _build_link_ok():
+            log.error("/build link is required for Immich 2.7+ but is not active.")
+            log.error("  Run: immich-accelerator setup")
+            log.error("  Then reboot to activate the /build link.")
+            return
+    else:
+        # Pre-2.7, no plugins — IMMICH_BUILD_DATA fallback is sufficient
         worker_env["IMMICH_BUILD_DATA"] = str(build_data)
 
     # Set up VideoToolbox ffmpeg wrapper.
