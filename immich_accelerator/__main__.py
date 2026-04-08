@@ -44,6 +44,66 @@ LOG_DIR = DATA_DIR / "logs"
 # --- Utility ---
 
 
+def _fix_plugin_paths(config: dict, build_data: str, server_dir: Path, node: str):
+    """Clear stale plugin rows so the native worker re-registers with correct paths.
+
+    Immich 2.7+ stores absolute wasmPaths in the shared Postgres DB. In
+    split-worker setups (Docker API on NAS, native microservices on Mac),
+    the Docker worker stores /build/corePlugin/... which doesn't exist on
+    macOS. Deleting mismatched rows forces re-registration on next bootstrap.
+    """
+    script = """\
+const {Client} = require('pg');
+const c = new Client({
+  host: process.env.PG_HOST,
+  port: parseInt(process.env.PG_PORT),
+  user: process.env.PG_USER,
+  password: process.env.PG_PASS,
+  database: process.env.PG_DB,
+});
+const prefix = process.env.BUILD_DATA;
+c.connect()
+  .then(() => c.query(
+    'DELETE FROM plugin WHERE "wasmPath" IS NOT NULL AND "wasmPath" NOT LIKE $1',
+    [prefix + '%']
+  ))
+  .then(r => {
+    if (r.rowCount > 0) console.log('Cleared ' + r.rowCount + ' stale plugin path(s)');
+    return c.end();
+  })
+  .catch(e => {
+    console.error('plugin-fix: ' + e.message);
+    c.end().catch(() => {});
+  });
+"""
+    env = os.environ.copy()
+    env.update(
+        {
+            "NODE_PATH": str(server_dir / "node_modules"),
+            "PG_HOST": config["db_hostname"],
+            "PG_PORT": config["db_port"],
+            "PG_USER": config["db_username"],
+            "PG_PASS": config.get("db_password", ""),
+            "PG_DB": config["db_name"],
+            "BUILD_DATA": build_data,
+        }
+    )
+    try:
+        result = subprocess.run(
+            [node, "-e", script],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.stdout.strip():
+            log.info(result.stdout.strip())
+        if result.returncode != 0 and result.stderr.strip():
+            log.debug("Plugin path fix: %s", result.stderr.strip())
+    except Exception as e:
+        log.debug("Plugin path fix skipped: %s", e)
+
+
 def find_binary(name: str, paths: list[str], install_hint: str) -> str:
     for p in paths:
         if os.path.isfile(p):
@@ -383,26 +443,39 @@ def download_immich_server(version: str) -> Path:
         shutil.rmtree(build_data)
     build_data.mkdir(parents=True, exist_ok=True)
 
-    # Download and extract layers containing server and build data
-    # Check layers >1MB, largest first (server is usually in the bigger ones)
+    # Download and extract layers containing server and build data.
+    # Process all layers largest-first. Docker COPY instructions each create
+    # a separate layer — corePlugin (WASM) may be in a small layer, so we
+    # can't skip by size. Build data accumulates across multiple layers.
     found_server = False
-    found_build = False
-    sized_layers = [(i, l) for i, l in enumerate(layers) if l["size"] > 1024 * 1024]
-    sized_layers.sort(key=lambda x: x[1]["size"], reverse=True)
+    sorted_layers = list(enumerate(layers))
+    sorted_layers.sort(key=lambda x: x[1]["size"], reverse=True)
 
-    for i, layer in sized_layers:
-        if found_server and found_build:
+    import io
+
+    for i, layer in sorted_layers:
+        if found_server and (build_data / "corePlugin" / "manifest.json").exists():
             break
         size_mb = layer["size"] / 1024 / 1024
         digest = layer["digest"]
-        log.info("  Downloading layer %d/%d (%.0fMB)...", i + 1, len(layers), size_mb)
+        if size_mb >= 1:
+            log.info(
+                "  Downloading layer %d/%d (%.0fMB)...",
+                i + 1,
+                len(layers),
+                size_mb,
+            )
+        else:
+            log.debug(
+                "  Downloading layer %d/%d (%.0fKB)...",
+                i + 1,
+                len(layers),
+                layer["size"] / 1024,
+            )
 
         try:
             resp = _get(f"{registry}/v2/{image}/blobs/{digest}")
             data = resp.read()
-            log.debug("    Downloaded %.0fMB", len(data) / 1024 / 1024)
-
-            import io
 
             with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
                 names = tf.getnames()
@@ -413,7 +486,6 @@ def download_immich_server(version: str) -> Path:
                     log.info("    Extracting server...")
                     # Extract all server members at once — pnpm symlinks need
                     # their targets to exist, so per-member extract breaks.
-                    # Extract full archive to temp dir, then move server/ out.
                     import tempfile
 
                     with tempfile.TemporaryDirectory() as tmpdir:
@@ -432,13 +504,15 @@ def download_immich_server(version: str) -> Path:
                     log.info("    Extracting build data...")
                     for member in tf.getmembers():
                         if member.name.startswith("build/"):
+                            # Rewrite "build/" -> "build-data/" so files land
+                            # directly in our IMMICH_BUILD_DATA directory
+                            member.name = "build-data" + member.name[5:]
                             try:
                                 tf.extract(
                                     member, str(build_data.parent), filter="data"
                                 )
                             except TypeError:
                                 tf.extract(member, str(build_data.parent))
-                    found_build = True
 
         except Exception as e:
             log.warning("  Layer %d failed: %s", i, e)
@@ -1614,6 +1688,9 @@ def cmd_start(args):
                 log.warning("  ML service failed to start — CLIP/face/OCR unavailable")
     elif ml_pid:
         log.info("ML service already running (PID %d)", ml_pid)
+
+    # Fix plugin paths for split-worker setups (Docker stores /build/... in DB)
+    _fix_plugin_paths(config, str(build_data), Path(server_dir), node)
 
     # Start native Immich microservices worker
     log.info("Starting Immich worker (version %s)...", config["version"])
