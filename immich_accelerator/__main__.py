@@ -44,64 +44,128 @@ LOG_DIR = DATA_DIR / "logs"
 # --- Utility ---
 
 
-def _fix_plugin_paths(config: dict, build_data: str, server_dir: Path, node: str):
-    """Clear stale plugin rows so the native worker re-registers with correct paths.
+def _ensure_build_firmlink():
+    """Ensure /build exists on macOS, pointing to our build-data directory.
 
-    Immich 2.7+ stores absolute wasmPaths in the shared Postgres DB. In
-    split-worker setups (Docker API on NAS, native microservices on Mac),
-    the Docker worker stores /build/corePlugin/... which doesn't exist on
-    macOS. Deleting mismatched rows forces re-registration on next bootstrap.
+    Immich stores absolute paths like /build/corePlugin/dist/plugin.wasm in
+    its shared Postgres DB. In split-worker setups, both Docker and native
+    workers need /build to resolve. macOS SIP prevents creating directories
+    at /, but synthetic.conf provides Apple's mechanism for root-level
+    firmlinks. Requires sudo once during setup.
     """
-    script = """\
-const {Client} = require('pg');
-const c = new Client({
-  host: process.env.PG_HOST,
-  port: parseInt(process.env.PG_PORT),
-  user: process.env.PG_USER,
-  password: process.env.PG_PASS,
-  database: process.env.PG_DB,
-});
-const prefix = process.env.BUILD_DATA;
-c.connect()
-  .then(() => c.query(
-    'DELETE FROM plugin WHERE "wasmPath" IS NOT NULL AND "wasmPath" NOT LIKE $1',
-    [prefix + '%']
-  ))
-  .then(r => {
-    if (r.rowCount > 0) console.log('Cleared ' + r.rowCount + ' stale plugin path(s)');
-    return c.end();
-  })
-  .catch(e => {
-    console.error('plugin-fix: ' + e.message);
-    c.end().catch(() => {});
-  });
-"""
-    env = os.environ.copy()
-    env.update(
-        {
-            "NODE_PATH": str(server_dir / "node_modules"),
-            "PG_HOST": config["db_hostname"],
-            "PG_PORT": config["db_port"],
-            "PG_USER": config["db_username"],
-            "PG_PASS": config.get("db_password", ""),
-            "PG_DB": config["db_name"],
-            "BUILD_DATA": build_data,
-        }
-    )
+    build_data = DATA_DIR / "build-data"
+    build_data.mkdir(parents=True, exist_ok=True)
+    target = Path("/build")
+
+    if target.is_symlink() or target.is_dir():
+        # Check if it points to our build-data
+        try:
+            if target.resolve() == build_data.resolve():
+                return True
+        except OSError:
+            pass
+        # /build exists but points elsewhere — don't touch it
+        log.debug("/build exists but doesn't point to our build-data")
+        return True  # Not fatal, IMMICH_BUILD_DATA fallback will be used
+
+    # Need to create the firmlink via synthetic.conf
+    synth_conf = Path("/etc/synthetic.conf")
+    # synthetic.conf uses paths relative to /System/Volumes/Data
+    relative_target = str(build_data).lstrip("/")
+    entry = f"build\t{relative_target}\n"
+
+    # Check if already configured
+    if synth_conf.exists():
+        content = synth_conf.read_text()
+        if f"build\t" in content:
+            # Entry exists — may need reboot to activate
+            log.info("/build firmlink configured but not yet active.")
+            log.info(
+                "  Reboot or run: sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t"
+            )
+            return False
+
+    log.info("")
+    log.info("Immich stores plugin paths as /build/... in its database.")
+    log.info("To make these paths work on macOS, we need to create:")
+    log.info("  /build → ~/.immich-accelerator/build-data")
+    log.info("This uses macOS synthetic firmlinks (requires sudo once).")
+    log.info("")
+
+    try:
+        answer = input("Create /build firmlink? [Y/n] ").strip().lower()
+    except EOFError:
+        return False
+    if answer and answer != "y":
+        return False
+
+    # Append to synthetic.conf
     try:
         result = subprocess.run(
-            [node, "-e", script],
-            env=env,
+            ["sudo", "tee", "-a", str(synth_conf)],
+            input=entry,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            log.warning("Failed to update synthetic.conf: %s", result.stderr.strip())
+            return False
+    except subprocess.SubprocessError as e:
+        log.warning("Failed to update synthetic.conf: %s", e)
+        return False
+
+    # Try to activate without reboot
+    apfs_util = "/System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util"
+    if Path(apfs_util).exists():
+        result = subprocess.run(
+            ["sudo", apfs_util, "-t"],
             capture_output=True,
             text=True,
             timeout=10,
         )
-        if result.stdout.strip():
-            log.info(result.stdout.strip())
-        if result.returncode != 0 and result.stderr.strip():
-            log.debug("Plugin path fix: %s", result.stderr.strip())
-    except Exception as e:
-        log.debug("Plugin path fix skipped: %s", e)
+        if result.returncode == 0 and target.exists():
+            log.info("/build firmlink created successfully")
+            return True
+
+    log.info("/build firmlink configured. Reboot to activate it.")
+    return False
+
+
+def _remove_build_firmlink():
+    """Remove /build firmlink from synthetic.conf during uninstall."""
+    synth_conf = Path("/etc/synthetic.conf")
+    if not synth_conf.exists():
+        return
+
+    content = synth_conf.read_text()
+    lines = [
+        l for l in content.splitlines(keepends=True) if not l.startswith("build\t")
+    ]
+
+    if len(lines) == content.count("\n"):
+        return  # No build entry found
+
+    log.info("Removing /build firmlink (requires sudo)...")
+    new_content = "".join(lines)
+    try:
+        if new_content.strip():
+            subprocess.run(
+                ["sudo", "tee", str(synth_conf)],
+                input=new_content,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        else:
+            subprocess.run(
+                ["sudo", "rm", str(synth_conf)],
+                capture_output=True,
+                timeout=10,
+            )
+        log.info("  /build firmlink removed. Reboot to fully deactivate.")
+    except subprocess.SubprocessError as e:
+        log.warning("  Could not update synthetic.conf: %s", e)
 
 
 def find_binary(name: str, paths: list[str], install_hint: str) -> str:
@@ -892,6 +956,9 @@ def _finalize_config(config: dict) -> None:
 
     save_config(config)
 
+    # Ensure /build firmlink for plugin path compatibility (Immich 2.7+)
+    _ensure_build_firmlink()
+
     # Auto-start services
     log.info("")
     try:
@@ -1641,9 +1708,11 @@ def cmd_start(args):
     if config.get("upload_mount"):
         worker_env["IMMICH_MEDIA_LOCATION"] = config["upload_mount"]
 
-    # Point geodata to our managed directory (avoids needing /build/ on the host)
+    # /build firmlink points to our build-data dir (set up during setup).
+    # If firmlink isn't active, fall back to IMMICH_BUILD_DATA env var.
     build_data = DATA_DIR / "build-data"
-    worker_env["IMMICH_BUILD_DATA"] = str(build_data)
+    if not Path("/build").exists():
+        worker_env["IMMICH_BUILD_DATA"] = str(build_data)
 
     # Set up VideoToolbox ffmpeg wrapper.
     # Immich doesn't support videotoolbox as an accel option, so we put a
@@ -1696,9 +1765,6 @@ def cmd_start(args):
                 log.warning("  ML service failed to start — CLIP/face/OCR unavailable")
     elif ml_pid:
         log.info("ML service already running (PID %d)", ml_pid)
-
-    # Fix plugin paths for split-worker setups (Docker stores /build/... in DB)
-    _fix_plugin_paths(config, str(build_data), Path(server_dir), node)
 
     # Start native Immich microservices worker
     log.info("Starting Immich worker (version %s)...", config["version"])
@@ -2006,6 +2072,9 @@ def cmd_uninstall(_args):
         )
         plist.unlink()
         log.info("Launchd service removed")
+
+    # Remove /build firmlink from synthetic.conf
+    _remove_build_firmlink()
 
     # Remove data directory
     if DATA_DIR.exists():
