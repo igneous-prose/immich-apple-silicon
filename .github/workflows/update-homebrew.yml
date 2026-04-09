@@ -1,15 +1,17 @@
 name: Update Homebrew Formula
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v1.3.6)'
+        required: true
 
 jobs:
   update-tap:
     runs-on: ubuntu-latest
     env:
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ inputs.tag }}
     steps:
       - name: Get version from tag
         id: version
