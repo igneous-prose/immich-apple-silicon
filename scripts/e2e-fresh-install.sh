@@ -40,7 +40,6 @@ set -euo pipefail
 
 eval "$(/opt/homebrew/bin/brew shellenv)"
 
-VENV="/tmp/e2e-venv"
 DATA="/tmp/e2e-data"
 UPLOAD="/tmp/e2e-upload"
 
@@ -50,26 +49,21 @@ fail() { printf '[e2e FAIL] %s\n' "$*" >&2; exit "${2:-1}"; }
 rm -rf "$DATA" "$UPLOAD"
 mkdir -p "$DATA" "$UPLOAD"
 
-# -------------------------------------------------------------------
-# 1. Build a pristine venv with only the deps the formula pins.
-#    This mirrors the ML venv the formula creates at post_install.
-# -------------------------------------------------------------------
-if [ ! -x "$VENV/bin/python" ]; then
-    log "step 1: create venv with fastapi + uvicorn[standard]"
-    /opt/homebrew/bin/python3.11 -m venv "$VENV"
-    "$VENV/bin/pip" install --quiet --upgrade pip
-    "$VENV/bin/pip" install --quiet fastapi 'uvicorn[standard]'
-else
-    log "step 1: reusing existing venv at $VENV"
+# Bootstrap pre-installs fastapi + uvicorn[standard] into the system
+# python@3.11 site-packages so per-run E2E is network-independent
+# and not flaky on VM DNS. The formula's ml venv ships the same
+# package composition — this test is still a faithful proxy for
+# "does dashboard.create_app resolve its deps at runtime?"
+PY="/opt/homebrew/bin/python3.11"
+if [ ! -x "$PY" ]; then
+    PY="/opt/homebrew/opt/python@3.11/bin/python3.11"
 fi
 
-PY="$VENV/bin/python"
-
-# Smoke check: Python version + fastapi+uvicorn are importable.
+log "step 1: python + fastapi + uvicorn importable (pre-installed at bootstrap)"
 "$PY" -c "
 import sys, fastapi, uvicorn
 print(f'python {sys.version_info.major}.{sys.version_info.minor}, fastapi {fastapi.__version__}, uvicorn {uvicorn.__version__}')
-" || fail "venv smoke check failed" 2
+" || fail "dashboard deps not importable — bootstrap VM may be stale, re-run e2e-bootstrap-vm.sh" 2
 
 # -------------------------------------------------------------------
 # 2. Dashboard create_app smoke — direct regression for issue #17.

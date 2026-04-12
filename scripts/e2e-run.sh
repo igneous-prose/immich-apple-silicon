@@ -2,14 +2,14 @@
 # scripts/e2e-run.sh
 #
 # Per-PR/per-release E2E runner. Clones the bootstrapped VM, runs the
-# full fresh-install flow inside it against macmini's Immich, tears
-# down the clone. Eric's cleanup rule: the VM is deleted on success
+# full fresh-install flow inside it against the host's Immich, tears
+# down the clone. Cleanup rule: the VM is deleted on success
 # AND on failure.
 #
 # Prereqs:
 #   - scripts/e2e-bootstrap-vm.sh has been run once (creates immich-test-base)
 #   - scripts/e2e-host-portforward.sh can be started (needs socat)
-#   - macmini's OrbStack is running the immich_server/postgres/redis stack
+#   - the host's OrbStack is running the immich_server/postgres/redis stack
 #
 # Usage: scripts/e2e-run.sh
 

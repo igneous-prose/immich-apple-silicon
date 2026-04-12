@@ -1205,32 +1205,46 @@ def _finalize_config(config: dict) -> None:
 
 
 def _detect_docker_media_prefix(base_url: str, api_key: str) -> str | None:
-    """Ask the remote Immich API for one asset's originalPath and
-    return its directory prefix — i.e. the path Docker sees as its
-    IMMICH_MEDIA_LOCATION root.
+    """Ask the remote Immich API for Docker's view of the media root.
 
-    In split setups the native worker MUST write to the same absolute
-    path that Docker reads from. If the two roots differ, thumbnails
-    generated on the Mac are 404'd by the Docker API because Postgres
-    stores the Docker-side path and the file isn't there. We probe
-    once to surface this mismatch at setup time instead of at first
-    thumbnail access.
+    Split setups break when the native worker writes to a path that
+    doesn't match what Docker stores in Postgres (issue #19). We
+    detect Docker's prefix two ways:
 
-    Returns None if the API has no assets yet, can't be reached, or
-    doesn't accept the query — caller treats None as "don't know,
-    don't block".
+      1. /api/libraries → first entry's importPaths[0]. Works even
+         on empty libraries and doesn't require any assets. Gives
+         the EXACT configured library root.
+      2. /api/search/metadata → first asset's originalPath, stripped
+         to the library root. Fallback if no libraries are defined
+         (uploads-only Immich).
+
+    Returns None if neither signal is available — caller treats that
+    as "don't know, don't block".
     """
     import urllib.error
     import urllib.request
 
     if not api_key:
-        # Asset listing requires auth; no key -> can't probe
         return None
 
     headers = {"x-api-key": api_key, "Accept": "application/json"}
+
+    # 1. Libraries (preferred). Admin-scoped but any api key on the
+    #    owning user can see their own libraries.
     try:
-        # /api/search/metadata is stable across recent Immich versions
-        # and returns the same shape regardless of library count.
+        req = urllib.request.Request(f"{base_url}/api/libraries", headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            libs = json.loads(resp.read())
+        if isinstance(libs, list):
+            for lib in libs:
+                paths = lib.get("importPaths") or [] if isinstance(lib, dict) else []
+                if paths:
+                    return str(paths[0]).rstrip("/")
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TimeoutError):
+        pass
+
+    # 2. Fall back to probing an uploaded asset's originalPath.
+    try:
         body = json.dumps({"size": 1}).encode()
         req = urllib.request.Request(
             f"{base_url}/api/search/metadata",
@@ -1243,8 +1257,6 @@ def _detect_docker_media_prefix(base_url: str, api_key: str) -> str | None:
     except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TimeoutError):
         return None
 
-    # Newer Immich wraps results under assets.items; older versions
-    # return a flat list. Handle both.
     items = []
     if isinstance(data, dict):
         items = data.get("assets", {}).get("items") or data.get("items") or []
@@ -1255,15 +1267,10 @@ def _detect_docker_media_prefix(base_url: str, api_key: str) -> str | None:
         original = asset.get("originalPath") if isinstance(asset, dict) else None
         if not original:
             continue
-        # The library root is everything above the per-user UUID dir.
-        # Example: /data/library/admin/2026/DSC_0042.nef → /data/library
         parts = Path(original).parts
-        # Find the first UUID-looking component (36 chars with 4 dashes)
-        # and take the prefix before it.
         for i, p in enumerate(parts):
             if len(p) == 36 and p.count("-") == 4:
                 return str(Path(*parts[:i])) if i > 0 else None
-        # Fallback: take the parent-of-parent as a conservative prefix.
         if len(parts) >= 3:
             return str(Path(*parts[:-2]))
     return None

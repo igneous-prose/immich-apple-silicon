@@ -1,7 +1,7 @@
 #!/bin/bash
 # scripts/e2e-host-portforward.sh
 #
-# Ephemeral socat forwarders that expose macmini's 127.0.0.1-bound
+# Ephemeral socat forwarders that expose the host's 127.0.0.1-bound
 # Immich services on 192.168.64.1 so the tart VM can reach them.
 #
 # Starts three forwarders, writes their PIDs to a pidfile, and

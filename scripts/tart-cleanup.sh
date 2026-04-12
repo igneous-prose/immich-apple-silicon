@@ -1,7 +1,7 @@
 #!/bin/bash
 # scripts/tart-cleanup.sh
 #
-# Eric's cleanup rule: spin it down and free the disk. This script
+# Cleanup rule: spin it down and free the disk. This script
 # kills every tart VM in the `immich-*` namespace and optionally the
 # cached OCI base image. Safe to run anytime — anything in progress
 # is force-stopped.
