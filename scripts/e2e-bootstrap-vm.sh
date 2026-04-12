@@ -26,30 +26,40 @@ if ! command -v tart >/dev/null; then
     exit 1
 fi
 
-# 1. Pull base image if missing
-if ! tart list | awk 'NR>1 {print $2}' | grep -qx "macos-sonoma-base"; then
+# 1. Pull base image if missing. `tart list` shows OCI images by
+#    their full URL in the second column — grep against that.
+if ! tart list 2>/dev/null | grep -q "$BASE_IMAGE"; then
     log "Pulling base image $BASE_IMAGE (~30GB, one-time)..."
     tart pull "$BASE_IMAGE"
 else
     log "Base image already pulled."
 fi
 
-# 2. Clone to bootstrap VM if missing
-if ! tart list | awk 'NR>1 {print $2}' | grep -qx "$BOOTSTRAP_VM"; then
-    log "Cloning base image into $BOOTSTRAP_VM..."
-    tart clone macos-sonoma-base "$BOOTSTRAP_VM"
+# 2. Clone to bootstrap VM if missing. Clones MUST use the full OCI
+#    URL as the source — tart does not expose short names for cached
+#    OCI images.
+if ! tart list --format json 2>/dev/null | grep -q "\"Name\":\"$BOOTSTRAP_VM\""; then
+    log "Cloning $BASE_IMAGE into $BOOTSTRAP_VM..."
+    tart clone "$BASE_IMAGE" "$BOOTSTRAP_VM"
 fi
 
-# 3. Check if already bootstrapped (bootstrap marker file inside VM)
-if tart get "$BOOTSTRAP_VM" 2>&1 | grep -q "State: running"; then
-    log "$BOOTSTRAP_VM is already running. Assuming someone else is working on it; exiting."
+# 3. Refuse to double-start — if something else is already running
+#    the bootstrap VM, bail instead of interfering.
+running=$(tart list --format json 2>/dev/null | python3 -c "
+import sys, json
+for vm in json.load(sys.stdin):
+    if vm.get('Name') == '$BOOTSTRAP_VM' and vm.get('Running'):
+        print('yes')
+" 2>/dev/null || true)
+if [ "$running" = "yes" ]; then
+    log "$BOOTSTRAP_VM is already running. Bailing to avoid collision."
     exit 2
 fi
 
 log "Starting $BOOTSTRAP_VM (headless)..."
 tart run --no-graphics "$BOOTSTRAP_VM" &
 TART_PID=$!
-trap 'tart stop --force "$BOOTSTRAP_VM" 2>/dev/null || true; kill $TART_PID 2>/dev/null || true' EXIT
+trap 'tart stop --timeout 5 "$BOOTSTRAP_VM" 2>/dev/null || true; kill $TART_PID 2>/dev/null || true' EXIT
 
 # Wait for VM IP
 log "Waiting for VM to boot and acquire IP..."
@@ -101,7 +111,7 @@ log "Stopping VM and saving snapshot..."
 sshpass -p "$VM_PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     "$VM_USER@$VM_IP" "sudo shutdown -h now" 2>/dev/null || true
 sleep 5
-tart stop --force "$BOOTSTRAP_VM" 2>/dev/null || true
+tart stop --timeout 5 "$BOOTSTRAP_VM" 2>/dev/null || true
 trap - EXIT
 
 log "Bootstrap complete. $BOOTSTRAP_VM is ready to be cloned by per-run E2E tests."

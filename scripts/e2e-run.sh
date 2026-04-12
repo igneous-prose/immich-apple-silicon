@@ -73,7 +73,7 @@ fi
 cleanup() {
     log "tearing down..."
     "$REPO_DIR/scripts/e2e-host-portforward.sh" stop 2>/dev/null || true
-    tart stop --force "$TEST_VM" 2>/dev/null || true
+    tart stop --timeout 5 "$TEST_VM" 2>/dev/null || true
     tart delete "$TEST_VM" 2>/dev/null || true
     log "cleanup done. (base VM and OCI image retained — run scripts/tart-cleanup.sh --all to free them)"
 }

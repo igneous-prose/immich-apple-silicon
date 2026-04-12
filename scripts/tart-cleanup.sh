@@ -35,25 +35,36 @@ run() {
 
 log() { printf '[tart-cleanup] %s\n' "$*"; }
 
-# 1. Every immich-* VM
-vms=$(tart list | awk 'NR>1 && $2 ~ /^immich-/ {print $2}')
+# 1. Every immich-* VM (JSON-safe: tart's text columns are fragile).
+vms=$(tart list --format json 2>/dev/null | python3 -c '
+import sys, json
+for vm in json.load(sys.stdin):
+    if vm.get("Source") == "local" and vm["Name"].startswith("immich-"):
+        print(vm["Name"])
+' 2>/dev/null || true)
 if [ -z "$vms" ]; then
     log "no immich-* VMs found"
 else
     log "found VMs:"
     echo "$vms" | sed 's/^/  /'
     for vm in $vms; do
-        run tart stop --force "$vm" 2>/dev/null || true
+        run tart stop --timeout 5 "$vm" 2>/dev/null || true
         run tart delete "$vm"
     done
 fi
 
-# 2. Cached base image (only with --all)
+# 2. Cached OCI base image (only with --all)
 if [ "$DELETE_BASE" -eq 1 ]; then
-    if tart list | awk 'NR>1 {print $2}' | grep -qx "macos-sonoma-base"; then
-        log "deleting base image macos-sonoma-base (~30GB)"
-        run tart delete macos-sonoma-base
-    fi
+    oci_images=$(tart list --format json 2>/dev/null | python3 -c '
+import sys, json
+for vm in json.load(sys.stdin):
+    if vm.get("Source") == "OCI" and "macos-sonoma-base" in vm["Name"]:
+        print(vm["Name"])
+' 2>/dev/null || true)
+    for img in $oci_images; do
+        log "deleting base OCI image $img (~30GB)"
+        run tart delete "$img"
+    done
 fi
 
 # 3. Disk report
