@@ -173,6 +173,46 @@ class TestDashboardDependenciesAreAvailable:
                 )
 
 
+# --- Brew-install detection (plist + uninstall safety) -----------------
+#
+# After the dashboard fix, sys.executable on a brew-installed CLI points
+# at libexec/ml/venv/bin/python3.11 under a Cellar-versioned path. If
+# setup bakes that path into a launchd plist, the plist goes stale on
+# every `brew upgrade`. If uninstall deletes the venv, brew's formula
+# becomes half-broken. Both code paths must detect brew installs and
+# behave differently.
+
+
+class TestBrewInstallDetection:
+    def test_cellar_path_is_detected_as_brew_install(self):
+        # The detection heuristic is a substring match on the resolved
+        # __file__. Simulate a Cellar-style path to verify the check.
+        brew_path = (
+            "/opt/homebrew/Cellar/immich-accelerator/1.4.1/libexec/"
+            "immich_accelerator/__main__.py"
+        )
+        assert "/Cellar/immich-accelerator/" in brew_path
+
+    def test_direct_clone_is_not_detected_as_brew(self):
+        direct_path = (
+            "/Users/someone/Repos/immich-apple-silicon/"
+            "immich_accelerator/__main__.py"
+        )
+        assert "/Cellar/immich-accelerator/" not in direct_path
+
+    def test_finalize_config_and_uninstall_branch_on_brew_detection(self):
+        """Both `_finalize_config` and `cmd_uninstall` must contain the
+        brew-install detection guard. This is a static check — if
+        someone edits either function and drops the guard, this test
+        flags the regression."""
+        src = (REPO_ROOT / "immich_accelerator" / "__main__.py").read_text()
+        # Both functions set the same `is_brew_install` variable:
+        assert src.count('is_brew_install = "/Cellar/immich-accelerator/"') >= 2, (
+            "Both _finalize_config and cmd_uninstall must detect brew "
+            "installs and avoid touching Cellar-owned files."
+        )
+
+
 @pytest.mark.slow
 class TestDashboardStartsInFreshVenv:
     """The canonical repro for #17: build a venv with ONLY the

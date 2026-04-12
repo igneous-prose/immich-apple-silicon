@@ -1123,7 +1123,12 @@ def _finalize_config(config: dict) -> None:
     if not answer or answer == "y":
         cmd_start(argparse.Namespace(force=True))
 
-    # Offer to install launchd service (watch mode — manages worker, ML, and dashboard)
+    # Offer to install launchd service (watch mode — manages worker, ML, and dashboard).
+    # Brew-installed users must use `brew services start immich-accelerator` instead:
+    # the Homebrew formula defines its own service block, and brew services survives
+    # upgrades correctly. A hand-rolled plist with a Cellar-versioned python path
+    # would go stale the first time `brew upgrade` bumped the cellar.
+    is_brew_install = "/Cellar/immich-accelerator/" in str(Path(__file__).resolve())
     plist_src = (
         Path(__file__).parent.parent / "launchd" / "com.immich.accelerator.plist"
     )
@@ -1131,7 +1136,11 @@ def _finalize_config(config: dict) -> None:
         Path.home() / "Library" / "LaunchAgents" / "com.immich.accelerator.plist"
     )
 
-    if plist_src.exists() and not plist_dst.exists():
+    if is_brew_install:
+        log.info("")
+        log.info("Installed via Homebrew. To auto-start on login:")
+        log.info("  brew services start immich-accelerator")
+    elif plist_src.exists() and not plist_dst.exists():
         try:
             answer = (
                 input("  Install as system service (auto-starts on login)? [Y/n] ")
@@ -2196,6 +2205,7 @@ def cmd_dashboard(args):
 def cmd_uninstall(_args):
     """Remove services, data, and launchd config."""
     plist = Path.home() / "Library" / "LaunchAgents" / "com.immich.accelerator.plist"
+    is_brew_install = "/Cellar/immich-accelerator/" in str(Path(__file__).resolve())
     ml_venv = Path(__file__).parent.parent / "ml" / "venv"
 
     log.info("")
@@ -2204,8 +2214,15 @@ def cmd_uninstall(_args):
     if plist.exists():
         log.info("  - Launchd service (auto-start on login)")
     log.info("  - Accelerator data (~/.immich-accelerator)")
-    if ml_venv.exists():
+    if ml_venv.exists() and not is_brew_install:
         log.info("  - ML venv (./ml/venv)")
+    if is_brew_install:
+        log.info("")
+        log.info("NOTE: Homebrew owns the ML venv and the installed binary —")
+        log.info("      this command only cleans up runtime state. To fully")
+        log.info("      remove the formula afterwards, run:")
+        log.info("        brew services stop immich-accelerator")
+        log.info("        brew uninstall immich-accelerator")
     log.info("")
     log.info(
         "Your Immich data, Docker containers, and Homebrew packages are NOT affected."
@@ -2253,8 +2270,10 @@ def cmd_uninstall(_args):
         shutil.rmtree(DATA_DIR)
         log.info("Removed %s", DATA_DIR)
 
-    # Remove ML venv
-    if ml_venv.exists():
+    # Remove ML venv — but only for direct clones. Deleting brew's
+    # Cellar-owned venv would break the currently-running python and
+    # leave a broken formula until `brew reinstall`.
+    if ml_venv.exists() and not is_brew_install:
         shutil.rmtree(ml_venv)
         log.info("Removed ML venv")
 
