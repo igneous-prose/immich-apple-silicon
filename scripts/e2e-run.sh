@@ -23,14 +23,27 @@ TS=$(date +%Y%m%d-%H%M%S)
 TEST_VM="immich-test-run-$TS"
 VM_USER="admin"
 VM_PASSWORD="admin"
+export SSHPASS="$VM_PASSWORD"
+
+# Strategy: sshpass is fragile when ssh needs stdin (rsync, tar|ssh
+# piping). Instead of fighting it, we use sshpass ONCE at the top
+# of the run to install a throwaway ed25519 key into the VM, then
+# use plain key-based ssh/rsync for everything after.
+KEY_FILE="/tmp/iac-e2e-key-$$"
 SSH_OPTS=(
     -o StrictHostKeyChecking=no
     -o UserKnownHostsFile=/dev/null
     -o ConnectTimeout=5
-    # The next three force sshpass's password path instead of trying
-    # every key in the caller's ssh-agent first — otherwise SSH hits
-    # "Too many authentication failures" before it reaches password
-    # auth. Learned the hard way during bootstrap failure.
+    -o IdentitiesOnly=yes
+    -i "$KEY_FILE"
+)
+# For the first-contact sshpass call — must force password and
+# disable all pubkey attempts so ssh doesn't try keys from agent
+# before falling back to password.
+SSH_OPTS_PW=(
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    -o ConnectTimeout=5
     -o PubkeyAuthentication=no
     -o PreferredAuthentications=password
     -o IdentitiesOnly=yes
@@ -86,9 +99,15 @@ cleanup() {
     "$REPO_DIR/scripts/e2e-host-portforward.sh" stop 2>/dev/null || true
     tart stop --timeout 5 "$TEST_VM" 2>/dev/null || true
     tart delete "$TEST_VM" 2>/dev/null || true
+    rm -f "$KEY_FILE" "$KEY_FILE.pub" 2>/dev/null || true
     log "cleanup done. (base VM and OCI image retained — run scripts/tart-cleanup.sh --all to free them)"
 }
 trap cleanup EXIT
+
+# Generate a throwaway ed25519 keypair for this run. Saves us from
+# fighting sshpass's pty weirdness for every rsync / ssh with stdin.
+ssh-keygen -t ed25519 -N '' -f "$KEY_FILE" -q
+KEY_PUB=$(cat "$KEY_FILE.pub")
 
 # ------------------- Clone + start VM ----------------------
 # Use default (Shared) networking — softnet requires passwordless
@@ -122,44 +141,59 @@ log "host bridge IP from VM's perspective: $HOST_BRIDGE_IP"
 log "starting host port forwarders ($HOST_BRIDGE_IP -> 127.0.0.1)"
 HOST_BIND_IP="$HOST_BRIDGE_IP" "$REPO_DIR/scripts/e2e-host-portforward.sh" start
 
-log "waiting for VM SSH..."
+log "waiting for VM SSH (password auth, one-time key install)..."
 for _ in $(seq 1 30); do
-    if sshpass -p "$VM_PASSWORD" ssh "${SSH_OPTS[@]}" "$VM_USER@$VM_IP" "echo ok" 2>/dev/null; then
+    # sshpass with password auth for the FIRST contact only — we
+    # use this single call to install our throwaway pubkey into
+    # ~/.ssh/authorized_keys so every subsequent ssh/rsync uses
+    # clean key auth. This sidesteps sshpass's pty fragility
+    # with rsync and tar pipes.
+    if sshpass -e ssh "${SSH_OPTS_PW[@]}" "$VM_USER@$VM_IP" \
+        "mkdir -p ~/.ssh && chmod 700 ~/.ssh && \
+         echo '$KEY_PUB' >> ~/.ssh/authorized_keys && \
+         chmod 600 ~/.ssh/authorized_keys && \
+         echo keyed" 2>/dev/null | grep -q keyed; then
         break
     fi
     sleep 2
 done
 
-# ------------------- Package + ship the source under test ----------
-# The E2E script runs against the branch's code directly (not the
-# published tap), so we tar up the checkout and copy it into the VM.
-TARBALL=/tmp/iac-src-$TS.tar.gz
-log "packaging source from $REPO_DIR"
-tar -C "$REPO_DIR" -czf "$TARBALL" \
-    --exclude=.git --exclude=__pycache__ --exclude='*.pyc' \
-    --exclude=.pytest_cache immich_accelerator ml tests VERSION
+# Sanity: verify key auth works now.
+if ! ssh "${SSH_OPTS[@]}" "$VM_USER@$VM_IP" "echo ok" 2>/dev/null | grep -q ok; then
+    log "VM SSH key auth failed after install — aborting."
+    exit 4
+fi
+log "VM SSH key auth OK"
 
-log "copying sources + e2e script into VM"
-sshpass -p "$VM_PASSWORD" scp "${SSH_OPTS[@]}" \
-    "$TARBALL" \
-    "$REPO_DIR/scripts/e2e-fresh-install.sh" \
-    "$VM_USER@$VM_IP:/tmp/"
+# ------------------- Ship the source under test via rsync ----------
+# From here on, every call uses plain ssh with our installed key.
+# No sshpass, no pty tricks, no stdin conflicts.
+log "rsyncing source + e2e script into VM"
+ssh "${SSH_OPTS[@]}" "$VM_USER@$VM_IP" "mkdir -p /tmp/iac-src"
+rsync -az --delete \
+    --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
+    --exclude='.pytest_cache' \
+    -e "ssh ${SSH_OPTS[*]}" \
+    "$REPO_DIR/immich_accelerator" \
+    "$REPO_DIR/ml" \
+    "$REPO_DIR/tests" \
+    "$REPO_DIR/VERSION" \
+    "$REPO_DIR/scripts" \
+    "$VM_USER@$VM_IP:/tmp/iac-src/"
 
 # ------------------- Run test ----------------------
 log "running E2E inside VM (host reachable at $HOST_BRIDGE_IP)..."
 set +e
-sshpass -p "$VM_PASSWORD" ssh "${SSH_OPTS[@]}" "$VM_USER@$VM_IP" \
+ssh "${SSH_OPTS[@]}" "$VM_USER@$VM_IP" \
     "set -e; \
-     mkdir -p /tmp/iac-src && tar -xzf /tmp/$(basename $TARBALL) -C /tmp/iac-src; \
      SRC_DIR=/tmp/iac-src \
      IMMICH_URL=http://$HOST_BRIDGE_IP:12283 \
      IMMICH_API_KEY='$IMMICH_API_KEY' \
      DB_HOST=$HOST_BRIDGE_IP DB_PORT=15432 DB_PASSWORD='$DB_PASSWORD' \
      REDIS_HOST=$HOST_BRIDGE_IP REDIS_PORT=16379 \
-     bash /tmp/e2e-fresh-install.sh"
+     bash /tmp/iac-src/scripts/e2e-fresh-install.sh"
 RC=$?
 set -e
-rm -f "$TARBALL"
 
 if [ $RC -eq 0 ]; then
     log "E2E PASSED"

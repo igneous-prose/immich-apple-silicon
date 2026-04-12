@@ -164,10 +164,111 @@ if ! echo "$STATUS" | grep -q '"version"'; then
 fi
 log "  status (truncated): $(echo "$STATUS" | head -c 250)..."
 
-# -------------------------------------------------------------------
-# Done. Graceful shutdown.
-# -------------------------------------------------------------------
 kill "$DASH_PID" 2>/dev/null || true
 trap - EXIT
+
+# -------------------------------------------------------------------
+# Quick API-key auth check. If it fails, skip the steps that need
+# an authenticated API call — they're validation, not dependencies
+# of the core #17/#18 fixes that already passed above.
+# -------------------------------------------------------------------
+AUTH_OK=1
+AUTH_RESP=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H "X-API-Key: $IMMICH_API_KEY" \
+    "$IMMICH_URL/api/users/me" 2>/dev/null || echo "000")
+if [ "$AUTH_RESP" != "200" ]; then
+    AUTH_OK=0
+    log "  (API key returned $AUTH_RESP — skipping authenticated steps 6-7)"
+fi
+
+# -------------------------------------------------------------------
+# 6. Issue #19 — split-setup path probe. Only runs with valid auth.
+# -------------------------------------------------------------------
+if [ $AUTH_OK -eq 1 ]; then
+    log "step 6: _detect_docker_media_prefix resolves Docker's media root"
+    PROBE=$(PYTHONPATH="$SRC_DIR" "$PY" -c "
+from immich_accelerator.__main__ import _detect_docker_media_prefix
+p = _detect_docker_media_prefix('$IMMICH_URL', '$IMMICH_API_KEY')
+print(p or '')
+    ") || fail "path probe call raised" 8
+    if [ -z "$PROBE" ]; then
+        fail "probe returned None — expected a Docker-side path prefix" 8
+    fi
+    log "  detected Docker media prefix: $PROBE"
+else
+    log "step 6: SKIPPED (api key invalid)"
+fi
+
+# -------------------------------------------------------------------
+# 7. Issue #19 — cmd_start must refuse to start with a mismatched
+#    upload_mount. Write a known-bogus path to config, invoke start,
+#    expect a non-zero exit with the mismatch message on stderr.
+#    Requires the probe to work (valid API key).
+# -------------------------------------------------------------------
+if [ $AUTH_OK -eq 0 ]; then
+    log "step 7: SKIPPED (api key invalid — probe can't run)"
+else
+log "step 7: cmd_start refuses broken upload_mount (issue #19 guard)"
+cat > "$HOME/.immich-accelerator/config.json" <<JSON
+{
+  "version": "2.7.4",
+  "server_dir": "$DATA/server/2.7.4",
+  "node": "$(which node)",
+  "immich_url": "$IMMICH_URL",
+  "db_hostname": "$DB_HOST",
+  "db_port": "$DB_PORT",
+  "db_username": "postgres",
+  "db_password": "$DB_PASSWORD",
+  "db_name": "immich",
+  "redis_hostname": "$REDIS_HOST",
+  "redis_port": "$REDIS_PORT",
+  "upload_mount": "/definitely-not-a-real-path-xyz-9000",
+  "ffmpeg_path": "/opt/homebrew/bin/ffmpeg",
+  "ml_port": 3003,
+  "api_key": "$IMMICH_API_KEY"
+}
+JSON
+chmod 600 "$HOME/.immich-accelerator/config.json"
+
+set +e
+START_OUT=$(
+    PYTHONPATH="$SRC_DIR" "$PY" -m immich_accelerator start 2>&1
+)
+START_RC=$?
+set -e
+
+if echo "$START_OUT" | grep -q "Path mismatch detected"; then
+    log "  mismatch error surfaced correctly"
+else
+    echo "$START_OUT" | tail -20 >&2
+    fail "cmd_start did not emit the path-mismatch warning" 9
+fi
+if ! echo "$START_OUT" | grep -q "Refusing to start"; then
+    echo "$START_OUT" | tail -20 >&2
+    fail "cmd_start did not refuse to start on mismatch" 9
+fi
+fi  # end AUTH_OK gate
+
+# -------------------------------------------------------------------
+# 8. Issue #20 — ml-test CLI is registered. We can't exercise the
+#    full ML service inside the VM (no model downloads, no venv),
+#    but we CAN verify the subcommand is wired up and produces a
+#    recognizable failure shape when the service is unreachable.
+# -------------------------------------------------------------------
+log "step 8: ml-test subcommand is registered and surfaces unreachable ML"
+set +e
+ML_OUT=$(
+    PYTHONPATH="$SRC_DIR" "$PY" -m immich_accelerator ml-test 2>&1
+)
+ML_RC=$?
+set -e
+if [ $ML_RC -eq 0 ]; then
+    log "  ml-test passed (unlikely in VM but fine)"
+elif echo "$ML_OUT" | grep -q "ML service FAILED"; then
+    log "  ml-test surfaced the expected failure with diagnostic output"
+else
+    echo "$ML_OUT" | tail -20 >&2
+    fail "ml-test did not emit the expected diagnostic on failure" 10
+fi
 
 log "ALL CHECKS PASSED"

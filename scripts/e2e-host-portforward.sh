@@ -26,8 +26,12 @@ fi
 
 start_forwarders() {
     if [ -f "$PIDFILE" ]; then
-        echo "Forwarders already running (PIDs in $PIDFILE). Use --stop first."
-        exit 2
+        # Orphan pidfile from a previous crashed run. Stop any live
+        # PIDs (may no longer exist) and blow the file away — this
+        # is a developer tool, not something that needs to be
+        # paranoid about colliding with a legitimate running copy.
+        echo "Cleaning up stale pidfile $PIDFILE..."
+        stop_forwarders
     fi
     : > "$PIDFILE"
     for pair in "12283:2283" "15432:5432" "16379:6379"; do
