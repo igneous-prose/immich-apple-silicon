@@ -1204,6 +1204,122 @@ def _finalize_config(config: dict) -> None:
     log.info("Immich Accelerator is running.")
 
 
+def _detect_docker_media_prefix(base_url: str, api_key: str) -> str | None:
+    """Ask the remote Immich API for one asset's originalPath and
+    return its directory prefix — i.e. the path Docker sees as its
+    IMMICH_MEDIA_LOCATION root.
+
+    In split setups the native worker MUST write to the same absolute
+    path that Docker reads from. If the two roots differ, thumbnails
+    generated on the Mac are 404'd by the Docker API because Postgres
+    stores the Docker-side path and the file isn't there. We probe
+    once to surface this mismatch at setup time instead of at first
+    thumbnail access.
+
+    Returns None if the API has no assets yet, can't be reached, or
+    doesn't accept the query — caller treats None as "don't know,
+    don't block".
+    """
+    import urllib.error
+    import urllib.request
+
+    if not api_key:
+        # Asset listing requires auth; no key -> can't probe
+        return None
+
+    headers = {"x-api-key": api_key, "Accept": "application/json"}
+    try:
+        # /api/search/metadata is stable across recent Immich versions
+        # and returns the same shape regardless of library count.
+        body = json.dumps({"size": 1}).encode()
+        req = urllib.request.Request(
+            f"{base_url}/api/search/metadata",
+            data=body,
+            headers={**headers, "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TimeoutError):
+        return None
+
+    # Newer Immich wraps results under assets.items; older versions
+    # return a flat list. Handle both.
+    items = []
+    if isinstance(data, dict):
+        items = data.get("assets", {}).get("items") or data.get("items") or []
+    elif isinstance(data, list):
+        items = data
+
+    for asset in items:
+        original = asset.get("originalPath") if isinstance(asset, dict) else None
+        if not original:
+            continue
+        # The library root is everything above the per-user UUID dir.
+        # Example: /data/library/admin/2026/DSC_0042.nef → /data/library
+        parts = Path(original).parts
+        # Find the first UUID-looking component (36 chars with 4 dashes)
+        # and take the prefix before it.
+        for i, p in enumerate(parts):
+            if len(p) == 36 and p.count("-") == 4:
+                return str(Path(*parts[:i])) if i > 0 else None
+        # Fallback: take the parent-of-parent as a conservative prefix.
+        if len(parts) >= 3:
+            return str(Path(*parts[:-2]))
+    return None
+
+
+def _warn_on_path_mismatch(immich_url: str, api_key: str, upload_mount: str) -> bool:
+    """Compare Docker's media prefix against upload_mount. Returns
+    True if a real mismatch was detected (so callers can error out),
+    False if no mismatch or the probe couldn't determine an answer.
+    Always logs a clear warning/error with actionable instructions.
+    """
+    detected = _detect_docker_media_prefix(immich_url, api_key)
+    if not detected:
+        return False
+
+    # Normalize both paths for comparison — strip trailing slashes.
+    detected_norm = detected.rstrip("/")
+    mount_norm = upload_mount.rstrip("/")
+    if detected_norm == mount_norm:
+        return False
+    # Also allow upload_mount being a suffix-compatible mount (e.g.
+    # /data/library vs /data): if upload_mount is a parent of detected,
+    # that's actually correct and the worker will write into the right
+    # sub-path.
+    if detected_norm.startswith(mount_norm + "/"):
+        return False
+
+    log.error("")
+    log.error("⚠  Path mismatch detected — split setup will 404 thumbnails!")
+    log.error("")
+    log.error("   Docker Immich stores paths under:   %s", detected_norm)
+    log.error("   Your upload_mount is set to:        %s", mount_norm)
+    log.error("")
+    log.error("   The native worker will write thumbnails to YOUR mount, but the")
+    log.error("   Docker API will look for them under DOCKER'S path and 404.")
+    log.error("")
+    log.error("   Two ways to fix this (pick one — see README 'Split deployment'):")
+    log.error("")
+    log.error("     A. Reconfigure Docker's IMMICH_MEDIA_LOCATION to match:")
+    log.error(
+        "          services.immich-server.environment.IMMICH_MEDIA_LOCATION=%s",
+        mount_norm,
+    )
+    log.error("        Then restart the Docker stack.")
+    log.error("")
+    log.error("     B. Create a macOS synthetic link so your Mac sees the same path:")
+    log.error(
+        "          echo '%s\\t%s' | sudo tee -a /etc/synthetic.d/immich-accelerator",
+        detected_norm.lstrip("/"),
+        mount_norm.lstrip("/"),
+    )
+    log.error("        Reboot, then re-run setup with upload_mount=%s", detected_norm)
+    log.error("")
+    return True
+
+
 def _query_immich_api(base_url: str, api_key: str) -> dict:
     """Query Immich API for server info. Returns version and config."""
     import urllib.request, urllib.error
@@ -1521,7 +1637,45 @@ def _setup_remote(args):
     db_name = prompt("Database name", "immich")
     redis_hostname = prompt("Redis host", db_hostname)
     redis_port = prompt("Redis port", "6379")
-    upload_mount = prompt("Upload/media path (as mounted on this Mac)")
+
+    # Probe Docker's view of the media root so we can surface mismatch
+    # up-front rather than when thumbnails 404 (issue #19). Requires
+    # API key — prompt for one if the user didn't pass it.
+    if not api_key:
+        log.info("")
+        log.info("Your Immich API key (Settings → API Keys in the web UI) lets us")
+        log.info(
+            "detect Docker's media path and prevent thumbnail 404s in split setups."
+        )
+        log.info("Leave blank to skip the check.")
+        api_key = getpass.getpass("  Immich API key (optional): ").strip()
+
+    detected_prefix = _detect_docker_media_prefix(url, api_key) if api_key else None
+    if detected_prefix:
+        log.info("")
+        log.info("Docker Immich is using this as its media root: %s", detected_prefix)
+        log.info("Your upload_mount MUST produce that same absolute path on this Mac.")
+        log.info("(See README → Split deployment for the two standard topologies.)")
+        log.info("")
+        default_mount = detected_prefix
+    else:
+        default_mount = ""
+
+    upload_mount = prompt("Upload/media path (as mounted on this Mac)", default_mount)
+
+    if api_key and upload_mount:
+        if _warn_on_path_mismatch(url, api_key, upload_mount):
+            # Real mismatch detected. Offer to abort so the user can
+            # fix the topology before we save a broken config.
+            try:
+                answer = (
+                    input("  Save config anyway and fix later? [y/N] ").strip().lower()
+                )
+            except EOFError:
+                answer = "n"
+            if answer != "y":
+                log.info("Aborted. Re-run setup after fixing the path mapping.")
+                return
 
     # Check connectivity
     config = {
@@ -1881,7 +2035,29 @@ def cmd_start(args):
             config["redis_port"] = immich["redis_port"]
             save_config(config)
     except RuntimeError as e:
-        log.warning("Could not verify Docker config (%s) — proceeding anyway", e)
+        # No local Docker — typical in split setups. We can't read
+        # IMMICH_MEDIA_LOCATION from the container env, but we CAN
+        # probe the Immich API for the Docker-side path prefix and
+        # compare it to our upload_mount. This is the exact case
+        # issue #19 hit, where a silent "proceeding anyway" let the
+        # worker start with mismatched paths and 404 all thumbnails.
+        log.info("No local Docker — using API probe to validate path mapping.")
+        api_key = config.get("api_key", "")
+        upload_mount = config.get("upload_mount", "")
+        if api_key and upload_mount:
+            if _warn_on_path_mismatch(
+                config.get("immich_url", ""), api_key, upload_mount
+            ):
+                log.error(
+                    "Refusing to start with a broken path mapping. Fix and retry."
+                )
+                return
+        else:
+            log.warning(
+                "Could not verify Docker config (%s) — proceeding without API probe "
+                "because no api_key or upload_mount is set in config.",
+                e,
+            )
 
     worker_pid = read_pid("worker")
     if worker_pid:
@@ -2238,6 +2414,186 @@ def cmd_dashboard(args):
     dashboard_mod.run_dashboard(config, port=args.port)
 
 
+def cmd_ml_test(_args):
+    """End-to-end diagnostic for the native ML service.
+
+    Exercises /health + real /predict calls for CLIP and OCR with a
+    synthetic image and reports per-check pass/fail. On any failure
+    tails the last 30 lines of the ml log so the user has an actionable
+    signal instead of the opaque 500 Immich returns.
+
+    Exit 0 on all pass, non-zero on any failure. Addresses issue #20:
+    "ML service is up and healthy but every job handler fails for
+    all URLs" — until now the only way to diagnose was to know to
+    read ~/.immich-accelerator/logs/ml.log and interpret it.
+    """
+    import urllib.error
+    import urllib.request
+
+    try:
+        config = load_config()
+    except RuntimeError:
+        config = {}
+    ml_port = int(config.get("ml_port", 3003))
+    base = f"http://localhost:{ml_port}"
+
+    results: list[tuple[str, bool, str]] = []
+
+    def check(name: str, fn):
+        try:
+            msg = fn()
+            log.info("  ✓ %s — %s", name, msg)
+            results.append((name, True, msg))
+        except Exception as e:
+            log.error("  ✗ %s — %s", name, e)
+            results.append((name, False, str(e)))
+
+    log.info("Testing ML service at %s...", base)
+    log.info("")
+
+    def ping():
+        with urllib.request.urlopen(f"{base}/ping", timeout=5) as r:
+            body = r.read().decode().strip()
+        if body != "pong":
+            raise RuntimeError(f"unexpected response: {body!r}")
+        return "reachable"
+
+    def health():
+        with urllib.request.urlopen(f"{base}/health", timeout=15) as r:
+            data = json.loads(r.read())
+        status = data.get("status", "unknown")
+        checks = data.get("checks", {})
+        failed = [k for k, v in checks.items() if v != "ok"]
+        if failed:
+            detail = ", ".join(f"{k}={checks[k]}" for k in failed)
+            raise RuntimeError(f"status={status}, failing: {detail}")
+        return f"status={status}, checks={list(checks.keys())}"
+
+    def _tiny_jpeg() -> bytes:
+        """10×10 solid-gray JPEG. Smallest valid test payload that
+        every model backend accepts."""
+        import base64
+
+        return base64.b64decode(
+            "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a"
+            "HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIy"
+            "MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAKAAoDASIA"
+            "AhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEB"
+            "AQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABn/"
+            "2Q=="
+        )
+
+    def predict(entries: dict, include_image: bool = True) -> bytes:
+        """POST /predict multipart with entries JSON and optional image."""
+        boundary = "----iac-ml-test"
+        lines = []
+        lines.append(f"--{boundary}\r\n".encode())
+        lines.append(b'Content-Disposition: form-data; name="entries"\r\n\r\n')
+        lines.append(json.dumps(entries).encode() + b"\r\n")
+        if include_image:
+            lines.append(f"--{boundary}\r\n".encode())
+            lines.append(
+                b'Content-Disposition: form-data; name="image"; '
+                b'filename="t.jpg"\r\nContent-Type: image/jpeg\r\n\r\n'
+            )
+            lines.append(_tiny_jpeg())
+            lines.append(b"\r\n")
+        lines.append(f"--{boundary}--\r\n".encode())
+        body = b"".join(lines)
+
+        req = urllib.request.Request(
+            f"{base}/predict",
+            data=body,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            raise RuntimeError(f"HTTP {e.code}: {body[:300]}")
+
+    def clip_visual():
+        data = predict({"clip": {"visual": {"modelName": "ViT-B-32__openai"}}})
+        result = json.loads(data)
+        # The upstream Immich ML wire format returns the embedding as
+        # a JSON-string of a Python list (main.py:534 does
+        # `str(embedding.tolist())`) — not a real JSON array.
+        # Python list repr happens to be valid JSON for float lists,
+        # so json.loads round-trips it safely.
+        raw = result.get("clip")
+        if isinstance(raw, str):
+            try:
+                emb = json.loads(raw)
+            except ValueError as e:
+                raise RuntimeError(f"could not parse embedding string: {e}")
+        else:
+            emb = raw
+        if not isinstance(emb, list) or len(emb) < 100:
+            size = len(emb) if hasattr(emb, "__len__") else "?"
+            raise RuntimeError(f"unexpected embedding: {type(emb).__name__} len={size}")
+        return f"embedding dim={len(emb)}"
+
+    def ocr_check():
+        data = predict(
+            {
+                "ocr": {
+                    "detection": {"modelName": "default", "options": {}},
+                    "recognition": {"modelName": "default", "options": {}},
+                }
+            }
+        )
+        result = json.loads(data)
+        ocr = result.get("ocr", {})
+        if not isinstance(ocr, dict) or "text" not in ocr:
+            raise RuntimeError(f"unexpected ocr shape: {ocr}")
+        return f"text items={len(ocr.get('text', []))}"
+
+    check("ping", ping)
+    check("health", health)
+    check("clip visual (ViT-B-32__openai)", clip_visual)
+    check("ocr (Apple Vision)", ocr_check)
+
+    all_passed = all(ok for _, ok, _ in results)
+    log.info("")
+    if all_passed:
+        log.info("ML service OK — %d/%d checks passed", len(results), len(results))
+        return
+
+    failed = [(n, e) for n, ok, e in results if not ok]
+    log.error(
+        "ML service FAILED — %d/%d checks failed",
+        len(failed),
+        len(results),
+    )
+    log.error("")
+    log.error("Last 30 lines of ~/.immich-accelerator/logs/ml.log:")
+    log.error("")
+    ml_log = LOG_DIR / "ml.log"
+    if ml_log.exists():
+        try:
+            tail = ml_log.read_text(errors="replace").splitlines()[-30:]
+            for line in tail:
+                log.error("    %s", line)
+        except OSError as e:
+            log.error("    (could not read %s: %s)", ml_log, e)
+    else:
+        log.error("    (%s does not exist — is the ML service running?)", ml_log)
+        log.error("")
+        log.error("    Try: immich-accelerator start")
+    log.error("")
+    log.error("Common root causes:")
+    log.error("  - mlx-clip / mlx version mismatch → brew reinstall immich-accelerator")
+    log.error(
+        "  - partial HuggingFace cache → rm -rf ~/.cache/huggingface/hub/models--mlx-community--clip-vit-base-patch32"
+    )
+    log.error("  - stale model files → rm -rf ~/.immich-accelerator/ml/models")
+    sys.exit(1)
+
+
 # --- Main ---
 
 
@@ -2365,6 +2721,10 @@ def main():
     sub.add_parser("watch", help="Monitor services, restart on crash (for launchd)")
     dash_p = sub.add_parser("dashboard", help="Web dashboard (http://localhost:8420)")
     dash_p.add_argument("--port", type=int, default=8420, help="Dashboard port")
+    sub.add_parser(
+        "ml-test",
+        help="Diagnose the ML service (health + CLIP + OCR round-trip)",
+    )
     sub.add_parser("uninstall", help="Remove services, data, and launchd config")
 
     args = parser.parse_args()
@@ -2382,6 +2742,7 @@ def main():
             "update": cmd_update,
             "watch": cmd_watch,
             "dashboard": cmd_dashboard,
+            "ml-test": cmd_ml_test,
             "uninstall": cmd_uninstall,
         }[args.command](args)
     except RuntimeError as e:

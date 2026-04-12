@@ -261,6 +261,115 @@ class TestGhcrRetry:
         assert mock_urlopen.call_count == 4
 
 
+# --- Split-setup path-mapping probe (issue #19) -------------------------
+#
+# Docker stores absolute paths like /data/library/<uuid>/... in Postgres.
+# The native worker must write to the same absolute path or the Docker
+# API 404s thumbnails. We probe /api/search/metadata at setup time to
+# detect Docker's media root and warn if upload_mount diverges.
+
+
+class TestDetectDockerMediaPrefix:
+    """The prefix detector strips the per-library UUID from a sample
+    asset's originalPath. Covers Immich's two response shapes (nested
+    under assets.items vs flat items list)."""
+
+    def _patch_urlopen(self, body, raises=None):
+        response = MagicMock()
+        response.__enter__ = lambda self: self
+        response.__exit__ = lambda self, *a: None
+        response.read.return_value = body
+        if raises:
+            return patch("urllib.request.urlopen", side_effect=raises)
+        return patch("urllib.request.urlopen", return_value=response)
+
+    def test_extracts_prefix_from_uuid_library_path(self):
+        from immich_accelerator.__main__ import _detect_docker_media_prefix
+
+        body = b'{"assets":{"items":[{"originalPath":"/data/library/c37f6663-c090-4262-bcf3-f91a642abcb4/2026/DSC.nef"}]}}'
+        with self._patch_urlopen(body):
+            result = _detect_docker_media_prefix("http://nas:2283", "fake-key")
+        assert result == "/data/library"
+
+    def test_handles_flat_items_response(self):
+        from immich_accelerator.__main__ import _detect_docker_media_prefix
+
+        body = b'{"items":[{"originalPath":"/mnt/photos/abcdefab-1234-5678-9abc-def012345678/file.jpg"}]}'
+        with self._patch_urlopen(body):
+            result = _detect_docker_media_prefix("http://nas:2283", "k")
+        assert result == "/mnt/photos"
+
+    def test_returns_none_without_api_key(self):
+        from immich_accelerator.__main__ import _detect_docker_media_prefix
+
+        # No urlopen mock — must not be called because api_key is empty.
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            result = _detect_docker_media_prefix("http://nas:2283", "")
+        assert result is None
+        mock_urlopen.assert_not_called()
+
+    def test_returns_none_on_http_error(self):
+        import urllib.error
+
+        from immich_accelerator.__main__ import _detect_docker_media_prefix
+
+        err = urllib.error.URLError("unreachable")
+        with self._patch_urlopen(b"", raises=err):
+            result = _detect_docker_media_prefix("http://down:2283", "k")
+        assert result is None
+
+    def test_returns_none_when_library_is_empty(self):
+        from immich_accelerator.__main__ import _detect_docker_media_prefix
+
+        with self._patch_urlopen(b'{"assets":{"items":[]}}'):
+            result = _detect_docker_media_prefix("http://nas:2283", "k")
+        assert result is None
+
+
+class TestWarnOnPathMismatch:
+    def test_no_warning_when_paths_match(self):
+        from immich_accelerator.__main__ import _warn_on_path_mismatch
+
+        with patch(
+            "immich_accelerator.__main__._detect_docker_media_prefix",
+            return_value="/data/library",
+        ):
+            assert not _warn_on_path_mismatch("http://x", "k", "/data/library")
+
+    def test_no_warning_when_upload_is_parent_of_detected(self):
+        """If upload_mount = /data and Docker sees /data/library, the
+        worker writes to /data/library correctly — no mismatch."""
+        from immich_accelerator.__main__ import _warn_on_path_mismatch
+
+        with patch(
+            "immich_accelerator.__main__._detect_docker_media_prefix",
+            return_value="/data/library",
+        ):
+            assert not _warn_on_path_mismatch("http://x", "k", "/data")
+
+    def test_warns_on_real_mismatch(self):
+        """Exactly jhoogeboom's case: Docker has /data/library but the
+        user's upload_mount is /Volumes/photos."""
+        from immich_accelerator.__main__ import _warn_on_path_mismatch
+
+        with patch(
+            "immich_accelerator.__main__._detect_docker_media_prefix",
+            return_value="/data/library",
+        ):
+            assert _warn_on_path_mismatch("http://x", "k", "/Volumes/photos")
+
+    def test_no_warning_when_probe_unavailable(self):
+        """If we can't determine Docker's prefix, we don't block — we
+        just don't know. Caller gets False (no mismatch detected)."""
+        from immich_accelerator.__main__ import _warn_on_path_mismatch
+
+        with patch(
+            "immich_accelerator.__main__._detect_docker_media_prefix",
+            return_value=None,
+        ):
+            assert not _warn_on_path_mismatch("http://x", "k", "/anywhere")
+
+
 # --- Brew-install detection (plist + uninstall safety) -----------------
 #
 # After the dashboard fix, sys.executable on a brew-installed CLI points
