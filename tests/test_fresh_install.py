@@ -456,30 +456,39 @@ class TestRegressionGuards:
 
     def test_node_options_parseable_by_real_node(self, tmp_path):
         """Simulates exactly what cmd_start does: build a NODE_OPTIONS
-        string with --require pointing at a real shim file, then spawn
-        node with that env and verify the shim loads. Catches any
-        quoting / escaping bug in the NODE_OPTIONS value without
-        needing a VM or a running worker.
+        string with --require pointing at a real shim file under a
+        path that CONTAINS A SPACE, then spawn node with that env
+        and verify the shim loads.
 
-        v1.4.2 shipped with single-quoted paths that Node treated
-        as literal characters, causing MODULE_NOT_FOUND on every
-        worker start. This test would have fired."""
+        CRITICAL: the shim is placed under a directory with a space
+        in the name so the quoting logic has to actually work. With
+        a plain `tmp_path` (no spaces) the v1.4.2 single-quoted bug
+        and a v1.4.3 pre-fix backslash-escape variant would both
+        pass this test — the whole point of this guard is the
+        quoting, so the path MUST contain a space.
+
+        Ground truth (empirically verified, Node 25.2):
+            unquoted    → splits on whitespace (fails)
+            '…' single  → literals land in filename (v1.4.2 bug)
+            \\ backslash → Node does NOT honor shell escapes
+            \"…\" double  → WORKS universally
+        """
         import shutil
 
         node = shutil.which("node")
         if not node:
             pytest.skip("node not installed")
 
-        # Write a trivial shim that just prints something recognizable.
-        shim = tmp_path / "sentinel_shim.js"
-        shim.write_text("process.stderr.write('SHIM_LOADED\\n');\n")
+        shim_dir = tmp_path / "dir with spaces"
+        shim_dir.mkdir()
+        shim = shim_dir / "sentinel_shim.js"
+        shim.write_text('process.stderr.write("SHIM_LOADED\\n");\n')
+        assert " " in str(shim), "test setup bug: shim path must contain a space"
 
-        # Mimic cmd_start's NODE_OPTIONS construction. Matches the
-        # code in immich_accelerator/__main__.py.
-        escaped = str(shim).replace(" ", r"\ ")
-        node_options = f"--require {escaped}"
+        # Mimic cmd_start's NODE_OPTIONS construction: double-quote
+        # the path. This must match exactly what __main__.py does.
+        node_options = f'--require "{shim}"'
 
-        # Run node with that env and a trivial script.
         script = tmp_path / "noop.js"
         script.write_text("process.exit(0);\n")
         result = subprocess.run(
@@ -501,24 +510,63 @@ class TestRegressionGuards:
             "SHIM_LOADED" in result.stderr
         ), f"shim did not run despite exit 0. stderr: {result.stderr}"
 
-    def test_cmd_start_node_options_string_is_well_formed(self):
-        """Static check on the shape of the NODE_OPTIONS builder in
-        cmd_start. Ensures we don't regress to shell-quoting the path
-        (which Node doesn't parse)."""
-        src = (REPO_ROOT / "immich_accelerator" / "__main__.py").read_text()
-        # The builder must use backslash-escaped whitespace, not
-        # shell-style quoting. We grep the full source so a future
-        # reshuffle of comments doesn't defeat the check.
-        assert 'replace(" ", r"\\ ")' in src, (
-            "cmd_start must escape spaces in the shim path with "
-            "backslashes for NODE_OPTIONS (Node parses NODE_OPTIONS "
-            "with backslash-escapes, not shell-style quoting — see "
-            "issue #24)."
+    def test_node_options_quoted_form_is_broken(self, tmp_path):
+        """Negative counterpart: prove the v1.4.2 single-quoted form
+        DOES fail with module-not-found when the path contains a
+        space. If this ever stops failing, the positive test above
+        loses its meaning and the regression guard is invalid."""
+        import shutil
+
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node not installed")
+
+        shim_dir = tmp_path / "dir with spaces"
+        shim_dir.mkdir()
+        shim = shim_dir / "sentinel_shim.js"
+        shim.write_text("process.stderr.write('SHIM_LOADED\\n');\n")
+
+        broken = f"--require '{shim}'"
+        script = tmp_path / "noop.js"
+        script.write_text("process.exit(0);\n")
+        result = subprocess.run(
+            [node, str(script)],
+            env={"NODE_OPTIONS": broken, "PATH": "/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
-        # And must not regress to single-quoting the require arg.
-        assert "f\"--require '" not in src, (
+        assert result.returncode != 0, (
+            "v1.4.2 quoted form should fail but didn't — " "regression guard invalid"
+        )
+        assert (
+            "Cannot find module" in result.stderr or "MODULE_NOT_FOUND" in result.stderr
+        ), f"expected module-not-found error, got: {result.stderr[:300]}"
+
+    def test_cmd_start_node_options_string_is_well_formed(self):
+        """Static check that cmd_start wraps the shim path in DOUBLE
+        quotes for NODE_OPTIONS. Double is the only form Node's
+        NODE_OPTIONS tokenizer honors universally. v1.4.2 shipped
+        single quotes (broken — quotes became literal chars in the
+        filename). A v1.4.3 pre-fix attempted backslash escaping
+        (also broken — Node doesn't honor shell escapes either).
+        Verified empirically against Node 25.2."""
+        src = (REPO_ROOT / "immich_accelerator" / "__main__.py").read_text()
+        # Must wrap the shim path in double quotes.
+        assert "f'--require \"{shim_path}\"'" in src, (
+            "cmd_start must wrap the shim path in double quotes for "
+            "NODE_OPTIONS. See issue #24 and the empirical findings "
+            "in TestRegressionGuards."
+        )
+        # Must not regress to single-quoting the require arg.
+        assert "f\"--require '{shim_path}'\"" not in src, (
             "NODE_OPTIONS single-quoted the shim path — Node doesn't "
-            "honor shell quoting, this was the v1.4.2 regression"
+            "honor shell quoting (v1.4.2 regression, #24)"
+        )
+        # Must not regress to backslash-escaping whitespace.
+        assert 'str(shim_path).replace(" ", r"\\ ")' not in src, (
+            "NODE_OPTIONS backslash-escaped whitespace — Node doesn't "
+            "honor shell escapes in NODE_OPTIONS either"
         )
 
 
