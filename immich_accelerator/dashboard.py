@@ -209,10 +209,15 @@ def get_status(config: dict) -> dict:
             "cpus": int(cpu_raw) if cpu_raw else 0,
         }
 
-    # Per-queue activity from Immich jobs API
+    # Per-queue activity from Immich jobs API. Also capture the raw
+    # active + waiting counts so the frontend can show "X remaining"
+    # (matching what the Immich admin panel shows) instead of only
+    # displaying DB-derived done/total which measures a different thing.
     queue_status = {}
+    queue_counts = {}
     api_key = config.get("api_key", "")
     immich_url = config.get("immich_url", "http://localhost:2283")
+    jobs_api_error = ""
     if api_key:
         import urllib.request as _urlreq2
 
@@ -220,7 +225,7 @@ def get_status(config: dict) -> dict:
             req = _urlreq2.Request(
                 f"{immich_url}/api/jobs", headers={"x-api-key": api_key}
             )
-            with _urlreq2.urlopen(req, timeout=2) as r:
+            with _urlreq2.urlopen(req, timeout=5) as r:
                 jobs = json.loads(r.read())
                 queue_map = {
                     "thumbnailGeneration": "thumbnails",
@@ -231,11 +236,15 @@ def get_status(config: dict) -> dict:
                 }
                 for immich_name, our_name in queue_map.items():
                     counts = jobs.get(immich_name, {}).get("jobCounts", {})
-                    queue_status[our_name] = (
-                        counts.get("active", 0) + counts.get("waiting", 0) > 0
-                    )
-        except Exception:
-            pass
+                    active = counts.get("active", 0)
+                    waiting = counts.get("waiting", 0)
+                    queue_status[our_name] = (active + waiting) > 0
+                    queue_counts[our_name] = active + waiting
+        except Exception as e:
+            jobs_api_error = str(e)[:200]
+            log.warning("jobs API unreachable: %s", jobs_api_error)
+    else:
+        jobs_api_error = "no api_key configured"
 
     # Versions
     version = config.get("version", "?")
@@ -291,6 +300,8 @@ def get_status(config: dict) -> dict:
         "version": version,
         "accelerator_version": _get_accelerator_version(),
         "queue_active": queue_status,
+        "queue_counts": queue_counts,
+        "jobs_api_error": jobs_api_error,
     }
 
     _cache = status

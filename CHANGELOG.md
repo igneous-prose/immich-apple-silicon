@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.6 — 2026-04-16
+
+### Fixes
+- **ML service silently failed to start after brew upgrade (#29)**. Config stored a versioned Cellar path for `ml_dir` which gets deleted on upgrade. `cmd_start` and `cmd_watch` now auto-resolve `ml_dir` via the stable `/opt/homebrew/opt/` symlink on every run. Warns loudly when the ML venv is missing instead of silently skipping.
+- **Dashboard showed "Idle" while Immich was processing (#28)**. The `/api/jobs` call had a 2s timeout that caused intermittent failures under load, and errors were silently swallowed. Dashboard now shows the actual error when the API is unreachable, displays queue counts matching Immich's admin panel, and bumps the timeout to 5s.
+
 ## 1.4.5 — 2026-04-15
 
 ### Fixes
