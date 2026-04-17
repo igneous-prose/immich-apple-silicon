@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.7 — 2026-04-17
+
+### Fixes
+- **Homebrew formula failed to install on every release since v1.4.4 (#31)**. The CI workflow that generates the formula used a bash heredoc containing backticks and em-dashes. Backticks triggered command substitution on the runner, em-dashes got mangled through the locale. Brew's Ruby installer rejected the resulting invalid UTF-8. Replaced with plain ASCII.
+
 ## 1.4.6 — 2026-04-16
 
 ### Fixes
