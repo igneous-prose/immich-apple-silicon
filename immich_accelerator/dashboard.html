@@ -403,10 +403,23 @@ function render(d) {
     chip.tasks.forEach((t, idx) => {
       const p = d.progress[t.key];
       const rate = rates[t.rk] || 0;
-      const rem = p.total - p.done;
+      const qc = (d.queue_counts && d.queue_counts[t.key]) || 0;
+      const rem = qc > 0 ? qc : (p.total - p.done);
       const eta = etaStr(rem, rate);
       const qActive = d.queue_active && d.queue_active[t.key];
-      const rateText = rate > 0 ? (rate + '/min' + (eta ? ' · ' + eta : '')) : (p.pct >= 99.9 ? 'done' : (qActive ? 'processing' : 'idle'));
+      const noApi = !d.queue_active || Object.keys(d.queue_active).length === 0;
+      let rateText;
+      if (rate > 0) {
+        rateText = rate + '/min' + (eta ? ' \u00b7 ' + eta : '') + (qc > 0 ? ' \u00b7 ' + qc + ' queued' : '');
+      } else if (p.pct >= 99.9) {
+        rateText = 'done';
+      } else if (qActive) {
+        rateText = 'processing' + (qc > 0 ? ' \u00b7 ' + qc + ' queued' : '');
+      } else if (noApi && p.done < p.total) {
+        rateText = d.jobs_api_error ? 'no job data: ' + d.jobs_api_error : 'no job data (check api_key in config)';
+      } else {
+        rateText = 'idle';
+      }
 
       // Divider between tasks
       if (idx > 0) {

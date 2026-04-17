@@ -2103,8 +2103,22 @@ def _find_python() -> str | None:
 
 
 def _find_ml_dir() -> Path | None:
-    """Find the immich-ml-metal service directory. Sets up venv if needed."""
+    """Find the immich-ml-metal service directory. Sets up venv if needed.
+
+    Candidate priority:
+    1. Homebrew's stable opt symlink — survives ``brew upgrade`` because
+       Homebrew maintains ``/opt/homebrew/opt/immich-accelerator`` as a
+       symlink to the current Cellar version. The versioned Cellar path
+       itself (e.g., ``.../Cellar/immich-accelerator/1.4.4/libexec/ml``)
+       is ephemeral: ``brew upgrade`` deletes it, and ``config.json``
+       references go stale (#29). The opt path doesn't have this problem.
+    2. Relative to this file — works for direct git-clone installs where
+       ``__file__`` lives at ``repo/immich_accelerator/__main__.py`` and
+       ``ml/`` is a sibling at ``repo/ml/``.
+    3. Home-directory fallback for legacy standalone ml clones.
+    """
     candidates = [
+        Path("/opt/homebrew/opt/immich-accelerator/libexec/ml"),
         Path(__file__).parent.parent / "ml",
         Path.home() / "immich-ml-metal",
     ]
@@ -2487,6 +2501,21 @@ def cmd_start(args):
             str(Path(config["ffmpeg_path"]).parent) + ":" + worker_env["PATH"]
         )
 
+    # Re-resolve ml_dir every start. Same pattern as the node path
+    # resolution above: config["ml_dir"] is a cache that goes stale
+    # when brew upgrade deletes the old Cellar directory (#29).
+    # _find_ml_dir() checks the stable /opt/homebrew/opt/ symlink
+    # first, so it survives upgrades without config migration.
+    resolved_ml = _find_ml_dir()
+    if resolved_ml and str(resolved_ml) != config.get("ml_dir"):
+        log.info(
+            "ML path changed (%s -> %s) — updating config.",
+            config.get("ml_dir") or "(unset)",
+            resolved_ml,
+        )
+        config["ml_dir"] = str(resolved_ml)
+        save_config(config)
+
     # Start ML service
     ml_started_here = False
     ml_pid = read_pid("ml")
@@ -2506,8 +2535,19 @@ def cmd_start(args):
                 log.info("  ML service running (PID %d)", ml_pid)
             except RuntimeError:
                 log.warning("  ML service failed to start — CLIP/face/OCR unavailable")
+        else:
+            log.warning(
+                "ML venv not found at %s — ML service will not start.",
+                ml_python,
+            )
+            log.warning(
+                "  If you installed via Homebrew, try: brew reinstall immich-accelerator"
+            )
     elif ml_pid:
         log.info("ML service already running (PID %d)", ml_pid)
+    elif not config.get("ml_dir"):
+        log.warning("No ml_dir configured — ML service will not start.")
+        log.warning("  Re-run: immich-accelerator setup")
 
     # Start native Immich microservices worker
     log.info("Starting Immich worker (version %s)...", config["version"])
@@ -2652,9 +2692,14 @@ def cmd_watch(_args):
             time.sleep(30)
             config = load_config()  # reload each cycle (setup may have changed it)
 
-            # Check ML
+            # Check ML — re-resolve ml_dir each cycle (same stale-
+            # path fix as cmd_start; brew upgrade can invalidate it).
             if not read_pid("ml"):
-                log.warning("ML service crashed — restarting...")
+                log.warning("ML service not running — attempting restart...")
+                resolved_ml = _find_ml_dir()
+                if resolved_ml and str(resolved_ml) != config.get("ml_dir"):
+                    config["ml_dir"] = str(resolved_ml)
+                    save_config(config)
                 ml_dir = Path(config.get("ml_dir", ""))
                 ml_python = ml_dir / "venv" / "bin" / "python3"
                 if ml_python.exists():
